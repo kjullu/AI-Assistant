@@ -1,0 +1,64 @@
+{
+  "name": "pebble-assistant",
+  "author": "Mikkel Aarby <mikkel.aarby@outlook.dk>",
+  "version": "0.1.0",
+  "keywords": [
+    "Ai-chat-app"
+  ],
+  "private": true,
+  "dependencies": {
+    "@rebble/clay": "^1.0.6"
+  },
+  "pebble": {
+    "displayName": "Pebble AI Assistant",
+    "uuid": "3d9a0c31-569d-46bf-b7bf-6fed7b951d4a",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "capabilities": [
+      "configurable",
+      "location"
+    ],
+    "targetPlatforms": [
+      "basalt",
+      "diorite",
+      "emery"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "Prompt",
+      "ClearSession",
+      "CancelRequest",
+      "ToggleLocation",
+      "ToggleMemory",
+      "ToggleCalculator",
+      "ToggleSearch",
+      "RefreshStats",
+      "ToolStates",
+      "OpenSessions",
+      "AssistantResponse",
+      "ResponseChunkIndex",
+      "ResponseChunkDone",
+      "Status",
+      "StatsText",
+      "Error",
+      "OpenRouterApiKey",
+      "OpenRouterModel",
+      "EnableLocation",
+      "EnableMemory",
+      "EnableCalculator",
+      "EnableSearch",
+      "BraveSearchApiKey",
+      "ExtraSystemPrompt",
+      "NotesMemoryText",
+      "StatsUsedCredits",
+      "StatsMessages",
+      "StatsSearches",
+      "DebugLog"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
