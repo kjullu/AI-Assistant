@@ -1,6 +1,6 @@
 # Pebble AI Chat
 
-A vibe-coded Pebble watchapp that lets you dictate AI prompts and read replies on your wrist with a model on OpenRouter. It works, there's no much more to say ¯\\_(ツ)_/¯
+A vibe-coded Pebble watchapp that lets you dictate AI prompts and read replies on your wrist with a model on OpenRouter. It works, there's no much more to say ¯\\\_(ツ)\_/¯
 
 ## What It Does
 
