@@ -518,7 +518,6 @@ function buildSystemPrompt() {
 function buildMessages(prompt, contextText, searchResultsText, calculatorResultsText) {
   var messages = [
     { role: 'system', content: buildSystemPrompt() },
-    { role: 'system', content: 'Current time is ' + new Date().toISOString() + '.' },
     { role: 'system', content: 'Current local time is ' + new Date().toString() + '.' }
   ];
 
