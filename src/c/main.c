@@ -4,6 +4,27 @@
 #define PADDING 5
 #define LABEL_HEIGHT 24
 #define TEXT_MEASURE_HEIGHT 12000
+#define BADGE_PAD 4
+#define BADGE_RADIUS 2
+#define ROW_HEIGHT 30
+#define TOGGLE_W 24
+#define TOGGLE_H 12
+#define KNOB_SIZE 8
+#define DIVIDER_GAP 6
+
+#ifdef PBL_COLOR
+#define ACCENT_AI     GColorCobaltBlue
+#define ACCENT_USER   GColorIslamicGreen
+#define ACCENT_ERROR  GColorSunsetOrange
+#define ACCENT_SELECT GColorCobaltBlue
+#define COLOR_DIM     GColorDarkGray
+#else
+#define ACCENT_AI     GColorBlack
+#define ACCENT_USER   GColorBlack
+#define ACCENT_ERROR  GColorBlack
+#define ACCENT_SELECT GColorBlack
+#define COLOR_DIM     GColorDarkGray
+#endif
 
 // Max characters Pebble dictation should store for one spoken prompt.
 #define DICTATION_BUFFER_SIZE 512
@@ -24,9 +45,8 @@ static TextLayer *s_assistant_layer;
 static Layer *s_history_layer;
 static Layer *s_home_layer;
 static TextLayer *s_status_message_layer;
-static TextLayer *s_settings_layer;
 static Layer *s_sessions_layer;
-static TextLayer *s_empty_layer;
+static Layer *s_settings_layer;
 static DictationSession *s_dictation_session;
 
 // These buffers hold the current conversation state shown in the single text view.
@@ -80,10 +100,91 @@ static int session_label_prefix_length(const char *line) {
   return 0;
 }
 
+//AI: Measure a single line of text in a given font, returning its content height.
+static int16_t measure_text_height(const char *text, GFont font, int16_t width) {
+  GSize size = graphics_text_layout_get_content_size(text ? text : "", font,
+                                                     GRect(0, 0, width, TEXT_MEASURE_HEIGHT),
+                                                     GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  return size.h;
+}
+
+//AI: Draw a filled, rounded "speaker" badge with white label text. Returns badge height.
+static int16_t draw_badge(GContext *ctx, int16_t x, int16_t y, int16_t max_width,
+                          const char *label, GColor fill, GFont font, bool draw) {
+  GSize text_size = graphics_text_layout_get_content_size(label, font,
+                                                          GRect(0, 0, max_width, TEXT_MEASURE_HEIGHT),
+                                                          GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  int16_t badge_w = text_size.w + (BADGE_PAD * 2);
+  int16_t badge_h = text_size.h + BADGE_PAD;
+  if (badge_h < 14) {
+    badge_h = 14;
+  }
+  if (draw) {
+    graphics_context_set_fill_color(ctx, fill);
+    graphics_fill_rect(ctx, GRect(x, y, badge_w, badge_h), BADGE_RADIUS, GCornersAll);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, label, font, GRect(x + BADGE_PAD, y - 1, text_size.w, text_size.h + 2),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  return badge_h;
+}
+
+//AI: Draw a dotted horizontal divider line across the given width.
+static void draw_divider(GContext *ctx, int16_t x, int16_t y, int16_t width, GColor color, bool draw) {
+  if (!draw) {
+    return;
+  }
+  graphics_context_set_stroke_color(ctx, color);
+  for (int16_t dx = x; dx < x + width; dx += 3) {
+    graphics_draw_line(ctx, GPoint(dx, y), GPoint(dx + 1, y));
+  }
+}
+
+//AI: Draw a sliding toggle switch. Knob right = on, knob left = off.
+static void draw_toggle_switch(GContext *ctx, int16_t x, int16_t y, bool on, bool selected) {
+  int16_t knob_x = on ? (x + TOGGLE_W - KNOB_SIZE - 2) : (x + 2);
+  int16_t knob_y = y + (TOGGLE_H - KNOB_SIZE) / 2;
+  int16_t radius = TOGGLE_H / 2;
+
+  GColor track_fill, track_stroke, knob_fill;
+  bool fill_track = true;
+  if (selected) {
+    track_stroke = GColorWhite;
+    if (on) {
+      track_fill = GColorWhite;
+      knob_fill = ACCENT_SELECT;
+    } else {
+      fill_track = false;
+      knob_fill = GColorWhite;
+    }
+  } else {
+    if (on) {
+      track_fill = ACCENT_SELECT;
+      track_stroke = ACCENT_SELECT;
+      knob_fill = GColorWhite;
+    } else {
+      track_fill = GColorWhite;
+      track_stroke = COLOR_DIM;
+      knob_fill = COLOR_DIM;
+    }
+  }
+
+  if (fill_track) {
+    graphics_context_set_fill_color(ctx, track_fill);
+    graphics_fill_rect(ctx, GRect(x, y, TOGGLE_W, TOGGLE_H), radius, GCornersAll);
+  }
+  graphics_context_set_stroke_color(ctx, track_stroke);
+  graphics_draw_round_rect(ctx, GRect(x, y, TOGGLE_W, TOGGLE_H), radius);
+  graphics_context_set_fill_color(ctx, knob_fill);
+  graphics_fill_rect(ctx, GRect(knob_x, knob_y, KNOB_SIZE, KNOB_SIZE), KNOB_SIZE / 2, GCornersAll);
+}
+
 static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
   GFont header_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
-  GFont label_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont date_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  GFont label_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+  int16_t width = bounds.size.w;
   int16_t y = 0;
   char *line = s_sessions_text;
 
@@ -93,17 +194,20 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
       *next = '\0';
     }
 
-    if (line[0] != '\0') {
+    if (line[0] != '\0' && strcmp(line, "---") == 0) {
+      draw_divider(ctx, 0, y + DIVIDER_GAP / 2, width, COLOR_DIM, draw);
+      y += DIVIDER_GAP + PADDING;
+    } else if (line[0] != '\0') {
       if (is_session_header(line)) {
-        GRect measure_rect = GRect(0, 0, bounds.size.w, TEXT_MEASURE_HEIGHT);
-        GSize size = graphics_text_layout_get_content_size(line, header_font, measure_rect,
-                                                           GTextOverflowModeWordWrap, GTextAlignmentLeft);
-        GRect draw_rect = GRect(0, y, bounds.size.w, size.h + PADDING);
+        int16_t hh = measure_text_height(line, header_font, width);
         if (draw) {
-          graphics_context_set_text_color(ctx, GColorBlack);
-          graphics_draw_text(ctx, line, header_font, draw_rect, GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+          graphics_context_set_fill_color(ctx, ACCENT_AI);
+          graphics_fill_rect(ctx, GRect(0, y, width, hh + 4), 0, GCornerNone);
+          graphics_context_set_text_color(ctx, GColorWhite);
+          graphics_draw_text(ctx, line, header_font, GRect(PADDING, y, width - (PADDING * 2), hh + 4),
+                             GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
         }
-        y += size.h + PADDING;
+        y += hh + 4 + 2;
       } else if (is_session_label(line)) {
         int prefix_len = session_label_prefix_length(line);
         char prefix[16];
@@ -115,40 +219,50 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
           memmove(remainder, remainder + 1, strlen(remainder));
         }
 
-        GSize prefix_size = graphics_text_layout_get_content_size(prefix, label_font, GRect(0, 0, bounds.size.w, TEXT_MEASURE_HEIGHT),
-                                                                  GTextOverflowModeWordWrap, GTextAlignmentLeft);
-        GSize body_size = {0, 0};
-        if (remainder[0] != '\0') {
-          body_size = graphics_text_layout_get_content_size(remainder, body_font, GRect(0, 0, bounds.size.w, TEXT_MEASURE_HEIGHT),
-                                                            GTextOverflowModeWordWrap, GTextAlignmentLeft);
-        }
+        GColor label_color = (strncmp(prefix, "user", 4) == 0 || strncmp(prefix, "User", 4) == 0) ? ACCENT_USER : ACCENT_AI;
+        int16_t label_h = measure_text_height(prefix, label_font, width);
         if (draw) {
-          graphics_context_set_text_color(ctx, GColorBlack);
-          graphics_draw_text(ctx, prefix, label_font, GRect(0, y, bounds.size.w, prefix_size.h + PADDING),
+          graphics_context_set_text_color(ctx, label_color);
+          graphics_draw_text(ctx, prefix, label_font, GRect(PADDING, y, width - (PADDING * 2), label_h + 1),
                              GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
-          if (remainder[0] != '\0') {
-            graphics_draw_text(ctx, remainder, body_font, GRect(0, y + prefix_size.h, bounds.size.w, body_size.h + PADDING),
+        }
+        y += label_h + 1;
+        if (remainder[0] != '\0') {
+          int16_t body_h = measure_text_height(remainder, body_font, width - (PADDING * 2));
+          if (draw) {
+            graphics_context_set_text_color(ctx, GColorBlack);
+            graphics_draw_text(ctx, remainder, body_font, GRect(PADDING * 2, y, width - (PADDING * 3), body_h + PADDING),
                                GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
           }
+          y += body_h + PADDING;
         }
-        y += prefix_size.h;
-        if (remainder[0] != '\0') {
-          y += body_size.h;
+      } else if (strncmp(line, "20", 2) == 0 && strlen(line) >= 10 && strchr(line, 'T')) {
+        int16_t dh = measure_text_height(line, date_font, width - (PADDING * 2));
+        if (draw) {
+          graphics_context_set_text_color(ctx, COLOR_DIM);
+          graphics_draw_text(ctx, line, date_font, GRect(PADDING, y, width - (PADDING * 2), dh + 1),
+                             GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
         }
-        y += PADDING;
+        y += dh + 1 + PADDING;
+      } else if (strcmp(line, "No saved sessions yet.") == 0) {
+        int16_t mh = measure_text_height(line, date_font, width - (PADDING * 2));
+        if (draw) {
+          graphics_context_set_text_color(ctx, COLOR_DIM);
+          graphics_draw_text(ctx, line, date_font, GRect(PADDING, y, width - (PADDING * 2), mh + PADDING),
+                             GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+        }
+        y += mh + PADDING;
       } else {
-        GRect measure_rect = GRect(0, 0, bounds.size.w, TEXT_MEASURE_HEIGHT);
-        GSize size = graphics_text_layout_get_content_size(line, body_font, measure_rect,
-                                                           GTextOverflowModeWordWrap, GTextAlignmentLeft);
-        GRect draw_rect = GRect(0, y, bounds.size.w, size.h + PADDING);
+        int16_t size_h = measure_text_height(line, body_font, width - (PADDING * 2));
         if (draw) {
           graphics_context_set_text_color(ctx, GColorBlack);
-          graphics_draw_text(ctx, line, body_font, draw_rect, GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+          graphics_draw_text(ctx, line, body_font, GRect(PADDING, y, width - (PADDING * 2), size_h + PADDING),
+                             GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
         }
-        y += size.h + PADDING;
+        y += size_h + PADDING;
       }
     } else {
-      y += PADDING;
+      y += PADDING / 2;
     }
 
     if (next) {
@@ -166,15 +280,88 @@ static void sessions_layer_update_proc(Layer *layer, GContext *ctx) {
   layout_sessions_text(ctx, layer_get_bounds(layer), true);
 }
 
-static void update_settings_text(void) {
-  static char settings_text[160];
-  snprintf(settings_text, sizeof(settings_text),
-           "%c Location: %s\n%c Memory: %s\n%c Calculator: %s\n%c Search: %s",
-           s_settings_selection == 0 ? '>' : ' ', s_location_enabled ? "on" : "off",
-           s_settings_selection == 1 ? '>' : ' ', s_memory_enabled ? "on" : "off",
-           s_settings_selection == 2 ? '>' : ' ', s_calculator_enabled ? "on" : "off",
-           s_settings_selection == 3 ? '>' : ' ', s_search_enabled ? "on" : "off");
-  text_layer_set_text(s_settings_layer, settings_text);
+//AI: Settings rows are drawn directly from the live toggle states; no text buffer needed.
+typedef struct {
+  const char *label;
+  bool enabled;
+} SettingRow;
+
+static int8_t settings_row_count(void) {
+  return 4;
+}
+
+static void get_settings_row(int8_t index, SettingRow *out) {
+  switch (index) {
+    case 0:
+      out->label = "Location";
+      out->enabled = s_location_enabled;
+      break;
+    case 1:
+      out->label = "Memory";
+      out->enabled = s_memory_enabled;
+      break;
+    case 2:
+      out->label = "Calculator";
+      out->enabled = s_calculator_enabled;
+      break;
+    default:
+      out->label = "Search";
+      out->enabled = s_search_enabled;
+      break;
+  }
+}
+
+//AI: Measure or draw the settings list with toggles and a selection highlight bar.
+static int16_t layout_settings_text(GContext *ctx, GRect bounds, bool draw) {
+  GFont header_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  GFont row_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  int16_t width = bounds.size.w;
+  int16_t y = PADDING;
+
+  if (draw) {
+    graphics_context_set_text_color(ctx, ACCENT_AI);
+    graphics_draw_text(ctx, "Tools", header_font, GRect(PADDING, y, width - (PADDING * 2), LABEL_HEIGHT),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  y += LABEL_HEIGHT + 2;
+  draw_divider(ctx, PADDING, y, width - (PADDING * 2), COLOR_DIM, draw);
+  y += DIVIDER_GAP + PADDING;
+
+  int8_t count = settings_row_count();
+  for (int8_t i = 0; i < count; i++) {
+    SettingRow row;
+    get_settings_row(i, &row);
+    bool selected = (i == s_settings_selection);
+    int16_t row_h = ROW_HEIGHT;
+
+    if (draw) {
+      if (selected) {
+        graphics_context_set_fill_color(ctx, ACCENT_SELECT);
+        graphics_fill_rect(ctx, GRect(0, y, width, row_h), 0, GCornerNone);
+      }
+      GColor text_color = selected ? GColorWhite : GColorBlack;
+      graphics_context_set_text_color(ctx, text_color);
+      graphics_draw_text(ctx, row.label, row_font, GRect(PADDING, y + 5, width - (PADDING * 2) - TOGGLE_W - PADDING, row_h),
+                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+      draw_toggle_switch(ctx, width - PADDING - TOGGLE_W, y + (row_h - TOGGLE_H) / 2, row.enabled, selected);
+    }
+    y += row_h;
+  }
+
+  if (draw) {
+    graphics_context_set_text_color(ctx, COLOR_DIM);
+    graphics_draw_text(ctx, "SELECT toggle  UP/DN move  BACK", hint_font,
+                       GRect(PADDING, y + PADDING, width - (PADDING * 2), 20),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  y += 20 + PADDING * 2;
+
+  return y;
+}
+
+static void settings_layer_update_proc(Layer *layer, GContext *ctx) {
+  layout_settings_text(ctx, layer_get_bounds(layer), true);
 }
 
 static void open_settings_screen(void) {
@@ -182,7 +369,6 @@ static void open_settings_screen(void) {
   s_show_settings = true;
   s_show_sessions = false;
   s_show_home = false;
-  update_settings_text();
   update_display("Ready");
 }
 
@@ -249,15 +435,39 @@ static void configure_message_layer(TextLayer *layer) {
   text_layer_set_overflow_mode(layer, GTextOverflowModeWordWrap);
 }
 
-//AI: Draw the idle home screen with usage/model/tool stats from the phone.
+//AI: Draw the idle home screen with a branded title, usage/model stats, and bottom hints.
 static void home_layer_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
-  const char *stats = s_stats_text[0] ? s_stats_text : "...";
+  int16_t width = bounds.size.w;
+  int16_t text_width = width - (PADDING * 2);
+  int16_t y = PADDING;
 
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, stats, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                     GRect(PADDING, PADDING, bounds.size.w - (PADDING * 2), bounds.size.h - PADDING),
+  GFont title_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  GFont stats_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+  GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+
+  graphics_context_set_text_color(ctx, ACCENT_AI);
+  int16_t title_h = measure_text_height("Pebble AI", title_font, text_width);
+  graphics_draw_text(ctx, "Pebble AI", title_font, GRect(PADDING, y, text_width, title_h + 2),
                      GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  y += title_h + 3;
+
+  draw_divider(ctx, PADDING, y, text_width, ACCENT_AI, true);
+  y += DIVIDER_GAP + PADDING;
+
+  const char *stats = s_stats_text[0] ? s_stats_text : "Loading stats...";
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, stats, stats_font, GRect(PADDING, y, text_width, bounds.size.h - y),
+                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+
+  int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions", hint_font, text_width);
+  int16_t hint_y = bounds.size.h - hint_h - PADDING;
+  if (hint_y > y) {
+    graphics_context_set_text_color(ctx, COLOR_DIM);
+    graphics_draw_text(ctx, "SELECT speak  UP tools  DOWN sessions", hint_font,
+                       GRect(PADDING, hint_y, text_width, hint_h + 2),
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+  }
 }
 
 //AI: Return true for transcript speaker-name lines that should be drawn in bold.
@@ -265,12 +475,24 @@ static bool is_history_label(const char *line) {
   return strcmp(line, "You") == 0 || strcmp(line, "AI") == 0 || strcmp(line, "Error") == 0;
 }
 
-//AI: Measure or draw the transcript line by line so labels can be bold and bodies can wrap.
+static GColor history_label_color(const char *line) {
+  if (strcmp(line, "You") == 0) {
+    return ACCENT_USER;
+  }
+  if (strcmp(line, "Error") == 0) {
+    return ACCENT_ERROR;
+  }
+  return ACCENT_AI;
+}
+
+//AI: Measure or draw the transcript turn by turn with colored speaker badges and dividers.
 static int16_t layout_history_text(GContext *ctx, GRect bounds, bool draw) {
-  GFont label_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont badge_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+  int16_t width = bounds.size.w;
   int16_t y = 0;
   char *line = s_chat_history;
+  bool first_turn = true;
 
   while (line && *line) {
     char *next = strchr(line, '\n');
@@ -280,18 +502,28 @@ static int16_t layout_history_text(GContext *ctx, GRect bounds, bool draw) {
 
     if (line[0] != '\0') {
       bool is_label = is_history_label(line);
-      GFont font = is_label ? label_font : body_font;
-      GRect measure_rect = GRect(0, 0, bounds.size.w, TEXT_MEASURE_HEIGHT);
-      GSize size = graphics_text_layout_get_content_size(line, font, measure_rect,
-                                                         GTextOverflowModeWordWrap, GTextAlignmentLeft);
-      GRect draw_rect = GRect(0, y, bounds.size.w, size.h + PADDING);
-      if (draw) {
-        graphics_context_set_text_color(ctx, GColorBlack);
-        graphics_draw_text(ctx, line, font, draw_rect, GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+      if (is_label) {
+        if (!first_turn) {
+          if (strcmp(line, "You") == 0) {
+            draw_divider(ctx, PADDING, y + 1, width - (PADDING * 2), COLOR_DIM, draw);
+            y += DIVIDER_GAP + PADDING;
+          } else {
+            y += PADDING * 3;
+          }
+        }
+        first_turn = false;
+        GColor fill = history_label_color(line);
+        int16_t badge_h = draw_badge(ctx, PADDING, y, width - (PADDING * 2), line, fill, badge_font, draw);
+        y += badge_h;
+      } else {
+        int16_t body_h = measure_text_height(line, body_font, width - (PADDING * 2));
+        if (draw) {
+          graphics_context_set_text_color(ctx, GColorBlack);
+          graphics_draw_text(ctx, line, body_font, GRect(PADDING, y, width - (PADDING * 2), body_h + PADDING),
+                             GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+        }
+        y += body_h + PADDING;
       }
-      y += size.h + (is_label ? 0 : PADDING);
-    } else {
-      y += PADDING;
     }
 
     if (next) {
@@ -340,9 +572,8 @@ static void layout_chat(bool scroll_to_bottom) {
   bool show_status_message = strcmp(s_status_text, "Ready") != 0 && strcmp(s_status_text, "Done") != 0 && !has_response;
 
   layer_set_hidden(s_home_layer, s_show_settings || s_show_sessions || !s_show_home || show_status_message);
-  layer_set_hidden(text_layer_get_layer(s_empty_layer), true);
   layer_set_hidden(s_history_layer, s_show_settings || s_show_sessions || s_show_home || !has_history);
-  layer_set_hidden(text_layer_get_layer(s_settings_layer), !s_show_settings);
+  layer_set_hidden(s_settings_layer, !s_show_settings);
   layer_set_hidden(s_sessions_layer, !s_show_sessions);
   layer_set_hidden(text_layer_get_layer(s_prompt_label_layer), true);
   layer_set_hidden(text_layer_get_layer(s_prompt_layer), true);
@@ -351,22 +582,22 @@ static void layout_chat(bool scroll_to_bottom) {
   layer_set_hidden(text_layer_get_layer(s_status_message_layer), !show_status_message);
 
   if (s_show_settings) {
-    update_settings_text();
-    y += resize_text_layer(s_settings_layer, y, width);
+    int16_t settings_height = layout_settings_text(NULL, GRect(0, 0, width, TEXT_MEASURE_HEIGHT), false);
+    layer_set_frame(s_settings_layer, GRect(0, y, width, settings_height));
+    layer_mark_dirty(s_settings_layer);
+    y += settings_height;
   }
 
   if (s_show_sessions) {
-    int16_t text_width = width - (PADDING * 2);
-    int16_t sessions_height = layout_sessions_text(NULL, GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT), false);
-    layer_set_frame(s_sessions_layer, GRect(PADDING, y, text_width, sessions_height));
+    int16_t sessions_height = layout_sessions_text(NULL, GRect(0, 0, width, TEXT_MEASURE_HEIGHT), false);
+    layer_set_frame(s_sessions_layer, GRect(0, y, width, sessions_height));
     layer_mark_dirty(s_sessions_layer);
     y += sessions_height;
   }
 
   if (!s_show_settings && !s_show_sessions && !s_show_home && has_history) {
-    int16_t text_width = width - (PADDING * 2);
-    int16_t history_height = layout_history_text(NULL, GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT), false);
-    layer_set_frame(s_history_layer, GRect(PADDING, y, text_width, history_height));
+    int16_t history_height = layout_history_text(NULL, GRect(0, 0, width, TEXT_MEASURE_HEIGHT), false);
+    layer_set_frame(s_history_layer, GRect(0, y, width, history_height));
     layer_mark_dirty(s_history_layer);
     y += history_height;
   }
@@ -382,12 +613,16 @@ static void layout_chat(bool scroll_to_bottom) {
     content_height = y + PADDING;
   } else {
     int16_t text_width = width - (PADDING * 2);
-    GSize stats_size = graphics_text_layout_get_content_size(s_stats_text[0] ? s_stats_text : "...",
-                                                             fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+    const char *stats = s_stats_text[0] ? s_stats_text : "Loading stats...";
+    int16_t title_h = measure_text_height("Pebble AI", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), text_width);
+    GSize stats_size = graphics_text_layout_get_content_size(stats,
+                                                             fonts_get_system_font(FONT_KEY_GOTHIC_24),
                                                              GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT),
                                                              GTextOverflowModeWordWrap, GTextAlignmentLeft);
-    int16_t stats_height = stats_size.h + (PADDING * 2);
-    content_height = stats_height > bounds.size.h ? stats_height : bounds.size.h;
+    int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions",
+                                         fonts_get_system_font(FONT_KEY_GOTHIC_14), text_width);
+    int16_t home_height = PADDING + (title_h + 3) + DIVIDER_GAP + PADDING + stats_size.h + PADDING + hint_h + PADDING;
+    content_height = home_height > bounds.size.h ? home_height : bounds.size.h;
     layer_set_frame(s_home_layer, GRect(0, 0, width, content_height));
     layer_mark_dirty(s_home_layer);
   }
@@ -545,7 +780,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_calculator_enabled = strstr(states, "calculator=1") != NULL;
     s_search_enabled = strstr(states, "search=1") != NULL;
     if (s_show_settings) {
-      update_settings_text();
+      layer_mark_dirty(s_settings_layer);
     }
   }
 
@@ -797,11 +1032,6 @@ static void window_load(Window *window) {
   content_indicator_configure_direction(indicator, ContentIndicatorDirectionDown, &down_config);
 
   //AI: Create separate label/body layers instead of one giant text blob.
-  s_empty_layer = text_layer_create(GRect(PADDING, PADDING, bounds.size.w - (PADDING * 2), 80));
-  configure_message_layer(s_empty_layer);
-  text_layer_set_text(s_empty_layer, "SELECT: speak\nUP/DOWN: scroll");
-  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_empty_layer));
-
   s_prompt_label_layer = text_layer_create(GRectZero);
   configure_label_layer(s_prompt_label_layer, "You");
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_prompt_label_layer));
@@ -831,9 +1061,9 @@ static void window_load(Window *window) {
   text_layer_set_text_color(s_status_message_layer, GColorDarkGray);
   scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_status_message_layer));
 
-  s_settings_layer = text_layer_create(GRectZero);
-  configure_message_layer(s_settings_layer);
-  scroll_layer_add_child(s_scroll_layer, text_layer_get_layer(s_settings_layer));
+  s_settings_layer = layer_create(GRectZero);
+  layer_set_update_proc(s_settings_layer, settings_layer_update_proc);
+  scroll_layer_add_child(s_scroll_layer, s_settings_layer);
 
   s_sessions_layer = layer_create(GRectZero);
   layer_set_update_proc(s_sessions_layer, sessions_layer_update_proc);
@@ -871,7 +1101,6 @@ static void window_disappear(Window *window) {
 // Destroy UI objects created in window_load().
 static void window_unload(Window *window) {
   // These objects were heap-allocated in window_load(), so they must be destroyed here.
-  text_layer_destroy(s_empty_layer);
   text_layer_destroy(s_prompt_label_layer);
   text_layer_destroy(s_prompt_layer);
   text_layer_destroy(s_assistant_label_layer);
@@ -879,7 +1108,7 @@ static void window_unload(Window *window) {
   layer_destroy(s_history_layer);
   layer_destroy(s_home_layer);
   text_layer_destroy(s_status_message_layer);
-  text_layer_destroy(s_settings_layer);
+  layer_destroy(s_settings_layer);
   layer_destroy(s_sessions_layer);
   status_bar_layer_destroy(s_status_layer);
   layer_destroy(s_scroll_indicator_down);
