@@ -503,10 +503,10 @@ function buildSystemPrompt() {
     'You are a practical assistant for a Pebble watch. Replies must be useful, compact, and readable on a tiny screen. Do not use markdown, write in plain text.',
     'Return only valid JSON in this shape: {"reply":"watch answer","timeline":null,"search":null,"notes":null,"calc":null}.',
     'Use 24-hour time. Use the provided current time, location context, search results, and notes/memory when relevant.',
-    'Search tool: if current web info is needed and search is available, return {"reply":"Searching...","timeline":null,"search":"short query","notes":null}. Request search at most once; after results are provided, answer and set search null.',
+    'Search tool: if current web info is needed and search is available, return {"reply":"","timeline":null,"search":"short query","notes":null}. Request search at most once; after results are provided, answer and set search null.',
     'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
     'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Put short note strings in notes. Do not duplicate existing memory or store temporary facts. The notes are your database; add things you think are important.',
-    'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, return calc as either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}. After the result is provided, answer and set calc null.'
+    'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, leave reply empty and return calc as either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}. After the result is provided, answer and set calc null.'
   ].join(' ');
   var extra = getSetting('ExtraSystemPrompt', '');
   if (extra) {
@@ -1007,17 +1007,20 @@ function callModelStream(messages, generation, callback) {
     }
 
     var parsed = parseAssistantContent(fullContent);
-    var finalReply = parsed.reply || extractReplyFromPartialJson(fullContent) || 'No response.';
-    debugLog('stream final replyLen=' + finalReply.length + ' search=' + !!parsed.search + ' notes=' + !!parsed.notes + ' prefix=' + clip(finalReply, 180));
-    if (!fullContent || finalReply === 'No response.') {
+    var finalReply = parsed.reply || extractReplyFromPartialJson(fullContent);
+    if (!finalReply && !parsed.search && !parsed.calc) {
+      finalReply = 'No response.';
+    }
+    debugLog('stream final replyLen=' + String(finalReply || '').length + ' search=' + !!parsed.search + ' notes=' + !!parsed.notes + ' prefix=' + clip(finalReply, 180));
+    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.calc)) {
       startNonStreamingFallback('empty-final');
       return;
     }
 
-    if (!sentAnyChunk) {
+    if (finalReply && !sentAnyChunk) {
       sendAssistantDelta(finalReply, 0, true);
       sentAnyChunk = true;
-    } else {
+    } else if (sentAnyChunk) {
       var missingText = finalReply.substring(sentReplyLength);
       if (missingText) {
         sendAssistantDelta(missingText, chunkIndex++, false);
@@ -1025,8 +1028,8 @@ function callModelStream(messages, generation, callback) {
       sendAssistantDelta('', chunkIndex, true);
     }
 
-    parsed.reply = finalReply;
-    callback(parsed, true);
+    parsed.reply = finalReply || '';
+    callback(parsed, sentAnyChunk);
   };
 
   request.onerror = function() {
@@ -1197,6 +1200,7 @@ function callOpenRouter(prompt) {
         try {
           var calculatorResultsText = runCalculatorTool(parsed.calc);
           debugLog('calculator tool result=' + calculatorResultsText);
+          sendToWatch({ Status: 'Calculating...' });
           var calculatorMessages = buildMessages(prompt, contextText, null, calculatorResultsText);
           callModelStream(calculatorMessages, generation, function(finalParsed, finalAlreadySent) {
             finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
