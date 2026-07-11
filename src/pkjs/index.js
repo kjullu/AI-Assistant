@@ -1173,46 +1173,7 @@ function callOpenRouter(prompt) {
     var contextText = locationContext + '\nSearch available: ' + (searchAvailable ? 'yes, request search with the search field when needed.' : 'no.') ;
     var firstMessages = buildMessages(prompt, contextText, null, null);
 
-    if (!searchAvailable) {
-      callModelStream(firstMessages, generation, function(parsed, alreadySent) {
-        if (parsed.search) {
-          braveSearch(String(parsed.search), generation, function(searchResultsText, searchError) {
-            if (searchError) {
-              showError(searchError, 'Search query: ' + parsed.search);
-              return;
-            }
-            sendToWatch({ Status: 'Thinking...' });
-            var secondMessages = buildMessages(prompt, contextText, searchResultsText, null);
-            callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
-              finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
-            });
-          });
-          return;
-        }
-
-        if (parsed.calc) {
-          if (!getBoolSetting('EnableCalculator', true)) {
-            showError('Calculator disabled.', 'Model requested calculator tool while disabled');
-            return;
-          }
-          try {
-            var calculatorResultsText = runCalculatorTool(parsed.calc);
-            debugLog('calculator tool result=' + calculatorResultsText);
-            var calculatorMessages = buildMessages(prompt, contextText, null, calculatorResultsText);
-            callModel(calculatorMessages, generation, function(finalParsed) {
-              finishAssistantTurn(prompt, finalParsed, false);
-            });
-          } catch (err) {
-            showError('Calculator failed.', err.message);
-          }
-          return;
-        }
-        finishAssistantTurn(prompt, parsed, alreadySent);
-      });
-      return;
-    }
-
-    callModel(firstMessages, generation, function(parsed) {
+    callModelStream(firstMessages, generation, function(parsed, alreadySent) {
       if (parsed.search) {
         braveSearch(String(parsed.search), generation, function(searchResultsText, searchError) {
           if (searchError) {
@@ -1221,11 +1182,14 @@ function callOpenRouter(prompt) {
           }
           sendToWatch({ Status: 'Thinking...' });
           var secondMessages = buildMessages(prompt, contextText, searchResultsText, null);
-          callModelStream(secondMessages, generation, function(finalParsed, alreadySent) {
-            finishAssistantTurn(prompt, finalParsed, alreadySent);
+          callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
+            finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
           });
         });
-      } else if (parsed.calc) {
+        return;
+      }
+
+      if (parsed.calc) {
         if (!getBoolSetting('EnableCalculator', true)) {
           showError('Calculator disabled.', 'Model requested calculator tool while disabled');
           return;
@@ -1234,15 +1198,15 @@ function callOpenRouter(prompt) {
           var calculatorResultsText = runCalculatorTool(parsed.calc);
           debugLog('calculator tool result=' + calculatorResultsText);
           var calculatorMessages = buildMessages(prompt, contextText, null, calculatorResultsText);
-          callModel(calculatorMessages, generation, function(finalParsed) {
-            finishAssistantTurn(prompt, finalParsed, false);
+          callModelStream(calculatorMessages, generation, function(finalParsed, finalAlreadySent) {
+            finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
           });
         } catch (err) {
           showError('Calculator failed.', err.message);
         }
-      } else {
-        finishAssistantTurn(prompt, parsed, false);
+        return;
       }
+      finishAssistantTurn(prompt, parsed, alreadySent);
     });
   });
 }
