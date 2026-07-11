@@ -763,19 +763,6 @@ function sendAssistantDelta(delta, chunkIndex, done) {
   });
 }
 
-function promptLooksLikeSearch(prompt) {
-  prompt = String(prompt || '').toLowerCase();
-  return prompt.indexOf('search') !== -1 ||
-    prompt.indexOf('look up') !== -1 ||
-    prompt.indexOf('latest') !== -1 ||
-    prompt.indexOf('current') !== -1 ||
-    prompt.indexOf('news') !== -1 ||
-    prompt.indexOf('today') !== -1 ||
-    prompt.indexOf('right now') !== -1 ||
-    prompt.indexOf('weather') !== -1 ||
-    prompt.indexOf('web') !== -1;
-}
-
 function getLocationContext(generation, callback) {
   if (!getBoolSetting('EnableLocation', false)) {
     callback('Location access disabled.');
@@ -1176,7 +1163,7 @@ function finishAssistantTurn(prompt, parsed, alreadySent) {
 function callOpenRouter(prompt) {
   requestGeneration++;
   var generation = requestGeneration;
-  debugLog('callOpenRouter promptLen=' + String(prompt || '').length + ' generation=' + generation + ' searchLooks=' + promptLooksLikeSearch(prompt));
+  debugLog('callOpenRouter promptLen=' + String(prompt || '').length + ' generation=' + generation);
   incrementStat('messages');
   sendStatsToWatch();
   sendToWatch({ Status: 'Thinking...' });
@@ -1186,8 +1173,23 @@ function callOpenRouter(prompt) {
     var contextText = locationContext + '\nSearch available: ' + (searchAvailable ? 'yes, request search with the search field when needed.' : 'no.') ;
     var firstMessages = buildMessages(prompt, contextText, null, null);
 
-    if (!searchAvailable || !promptLooksLikeSearch(prompt)) {
+    if (!searchAvailable) {
       callModelStream(firstMessages, generation, function(parsed, alreadySent) {
+        if (parsed.search) {
+          braveSearch(String(parsed.search), generation, function(searchResultsText, searchError) {
+            if (searchError) {
+              showError(searchError, 'Search query: ' + parsed.search);
+              return;
+            }
+            sendToWatch({ Status: 'Thinking...' });
+            var secondMessages = buildMessages(prompt, contextText, searchResultsText, null);
+            callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
+              finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
+            });
+          });
+          return;
+        }
+
         if (parsed.calc) {
           if (!getBoolSetting('EnableCalculator', true)) {
             showError('Calculator disabled.', 'Model requested calculator tool while disabled');
