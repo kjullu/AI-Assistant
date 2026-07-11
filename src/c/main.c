@@ -53,6 +53,7 @@ static DictationSession *s_dictation_session;
 static char s_last_prompt[DICTATION_BUFFER_SIZE];
 static char s_assistant_response[RESPONSE_BUFFER_SIZE];
 static char s_chat_history[CHAT_HISTORY_BUFFER_SIZE];
+static char *s_current_ai_response_start = NULL;
 static char s_status_text[64];
 static char s_stats_text[STATS_BUFFER_SIZE];
 static char s_sessions_text[1600];
@@ -403,6 +404,7 @@ static void clear_watch_session(void) {
   s_last_prompt[0] = '\0';
   s_assistant_response[0] = '\0';
   s_chat_history[0] = '\0';
+  s_current_ai_response_start = NULL;
   s_show_home = true;
   s_request_active = false;
   s_response_started = false;
@@ -674,6 +676,7 @@ static void send_prompt(const char *prompt) {
   append_chat_history("You\n");
   append_chat_history(s_last_prompt);
   append_chat_history("\n\nAI\n");
+  s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
   update_display("Sending...");
 
   // Start building an outgoing AppMessage dictionary.
@@ -711,6 +714,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   const char *status = "Ready";
   if (status_tuple) {
     status = status_tuple->value->cstring;
+    //AI: When a tool is running, reset the response flag so the real answer vibrates later.
+    if (strcmp(status, "Searching...") == 0 || strcmp(status, "Calculating...") == 0) {
+      s_response_started = false;
+    }
   }
 
   //USR: if response_tuple is true do:
@@ -723,6 +730,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       //AI: Chunk 0 starts a new reply, so clear the previous response first.
       if (chunk_index_tuple->value->int32 == 0) {
         s_assistant_response[0] = '\0';
+        if (s_current_ai_response_start) {
+          *s_current_ai_response_start = '\0';
+        }
       }
       //USR: else add to rest of response
       //AI: Add this chunk's text onto the full assistant response buffer.
