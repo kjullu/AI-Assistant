@@ -20,10 +20,11 @@ Open the app settings in the Pebble phone app and set:
 
 This app sends your dictated prompts to OpenRouter (and from there to the selected model). Optional features also send data to third parties:
 
-- `Location`: when enabled, your device location is included in the prompt.
+- `Location`: when enabled, your device location is included in the prompt and can be used for local weather.
 - `Brave Search`: when enabled, search queries are sent to Brave Search using your API key.
 - `Timeline`: when enabled, timeline pins are pushed through Pebble's timeline API.
-- `Calculator`: when enabled, lets the model call a calculator
+- `Calculator`: when enabled, lets the model call a calculator.
+- `Weather`: when enabled, lets the model look up weather forecasts for a place and time via Open-Meteo.
 
 No keys or prompts are stored in this repository; all credentials live in the Pebble phone app's local storage.
 

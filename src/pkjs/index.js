@@ -6,6 +6,9 @@ var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 var OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 var OPENROUTER_CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
 var BRAVE_SEARCH_URL = 'https://api.search.brave.com/res/v1/web/search';
+var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
+var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 var TIMELINE_URL = 'https://timeline-api.getpebble.com/v1/user/pins/';
 var DEFAULT_MODEL = 'moonshotai/kimi-k2.5';
 var RESPONSE_CHUNK_CHARS = 600;
@@ -241,7 +244,8 @@ function sendToolStatesToWatch() {
     ToolStates: 'location=' + (getBoolSetting('EnableLocation', false) ? '1' : '0') +
       ';memory=' + (getBoolSetting('EnableMemory', true) ? '1' : '0') +
       ';calculator=' + (getBoolSetting('EnableCalculator', true) ? '1' : '0') +
-      ';search=' + (getBoolSetting('EnableSearch', false) ? '1' : '0')
+      ';search=' + (getBoolSetting('EnableSearch', false) ? '1' : '0') +
+      ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0')
   });
 }
 
@@ -457,6 +461,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableMemory = settingValue(convertedSettings, rawSettings, 'EnableMemory', messageKeys.EnableMemory);
   var enableCalculator = settingValue(convertedSettings, rawSettings, 'EnableCalculator', messageKeys.EnableCalculator);
   var enableSearch = settingValue(convertedSettings, rawSettings, 'EnableSearch', messageKeys.EnableSearch);
+  var enableWeather = settingValue(convertedSettings, rawSettings, 'EnableWeather', messageKeys.EnableWeather);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
   var notesMemoryText = settingValue(convertedSettings, rawSettings, 'NotesMemoryText', messageKeys.NotesMemoryText);
@@ -483,6 +488,9 @@ function saveSettings(convertedSettings, rawSettings) {
   if (enableSearch !== undefined) {
     localStorage.setItem('EnableSearch', String(enableSearch ? 1 : 0));
   }
+  if (enableWeather !== undefined) {
+    localStorage.setItem('EnableWeather', String(enableWeather ? 1 : 0));
+  }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());
   }
@@ -501,21 +509,22 @@ function saveSettings(convertedSettings, rawSettings) {
 function buildSystemPrompt() {
   var prompt = [
     'You are a practical assistant for a Pebble watch. Replies must be useful, compact, and readable on a tiny screen. Do not use markdown, write in plain text.',
-    'Return only valid JSON in this shape: {"reply":"watch answer","timeline":null,"search":null,"notes":null,"calc":null}.',
-    'Use 24-hour time. Use the provided current time, location context, search results, and notes/memory when relevant.',
-    'Search tool: if current web info is needed and search is available, return {"reply":"","timeline":null,"search":"short query","notes":null}. Request search at most once; after results are provided, answer and set search null.',
+    'Return only valid JSON in this shape: {"reply":"watch answer","timeline":null,"search":null,"notes":null,"calc":null,"weather":null}.',
+    'Use 24-hour time. Use the provided current time, location context, search results, weather results, and notes/memory when relevant.',
+    'Search tool: if current web info is needed and search is available, return {"reply":"","timeline":null,"search":"short query","notes":null,"calc":null,"weather":null}. Request search at most once; after results are provided, answer and set search null.',
+    'Weather tool: if weather info is needed and weather is available, return {"reply":"","timeline":null,"search":null,"notes":null,"calc":null,"weather":{"place":"city name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}}. The place must always be provided by you; never auto-fetch the user\'s location. If the user did not specify a place, ask them to name one and keep weather null. Use timeframe "now" for current weather, "today" or "tomorrow" for the day, or "+3h"/"+2d" for a specific offset. Request weather at most once; after results are provided, answer and set weather null.',
     'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
     'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Put short note strings in notes. Do not duplicate existing memory or store temporary facts. The notes are your database; add things you think are important.',
     'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, leave reply empty and return calc as either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}. After the result is provided, answer and set calc null.'
   ].join(' ');
   var extra = getSetting('ExtraSystemPrompt', '');
   if (extra) {
-    prompt += ' User extra instructions: \"' + extra + '\"';
+    prompt += ' User extra instructions: \"' + extra + '"';
   }
   return prompt;
 }
 
-function buildMessages(prompt, contextText, searchResultsText, calculatorResultsText) {
+function buildMessages(prompt, contextText, searchResultsText, calculatorResultsText, weatherResultsText) {
   var messages = [
     { role: 'system', content: buildSystemPrompt() },
     { role: 'system', content: 'Current local time is ' + new Date().toString() + '.' }
@@ -530,6 +539,9 @@ function buildMessages(prompt, contextText, searchResultsText, calculatorResults
   }
   if (calculatorResultsText) {
     messages.push({ role: 'system', content: calculatorResultsText });
+  }
+  if (weatherResultsText) {
+    messages.push({ role: 'system', content: weatherResultsText });
   }
 
   var start = Math.max(0, conversationHistory.length - 6);
@@ -555,7 +567,8 @@ function parseAssistantContent(content) {
       timeline: parsed.timeline || null,
       search: parsed.search || null,
       notes: parsed.notes || null,
-      calc: parsed.calc || null
+      calc: parsed.calc || null,
+      weather: parsed.weather || null
     };
   } catch (err) {
     return {
@@ -563,7 +576,8 @@ function parseAssistantContent(content) {
       timeline: null,
       search: null,
       notes: null,
-      calc: null
+      calc: null,
+      weather: null
     };
   }
 }
@@ -674,6 +688,251 @@ function runCalculatorTool(calc) {
   throw new Error('Unsupported calculator request');
 }
 
+function weatherCodeText(code) {
+  var mapping = {
+    0: 'Clear sky',
+    1: 'Mainly clear',
+    2: 'Partly cloudy',
+    3: 'Overcast',
+    45: 'Fog',
+    48: 'Depositing rime fog',
+    51: 'Light drizzle',
+    53: 'Moderate drizzle',
+    55: 'Dense drizzle',
+    56: 'Light freezing drizzle',
+    57: 'Dense freezing drizzle',
+    61: 'Slight rain',
+    63: 'Moderate rain',
+    65: 'Heavy rain',
+    66: 'Light freezing rain',
+    67: 'Heavy freezing rain',
+    71: 'Slight snow',
+    73: 'Moderate snow',
+    75: 'Heavy snow',
+    77: 'Snow grains',
+    80: 'Slight rain showers',
+    81: 'Moderate rain showers',
+    82: 'Violent rain showers',
+    85: 'Slight snow showers',
+    86: 'Heavy snow showers',
+    95: 'Thunderstorm',
+    96: 'Thunderstorm with hail',
+    99: 'Heavy thunderstorm with hail'
+  };
+  return mapping[code] || 'Unknown weather';
+}
+
+function parseTimeframe(timeframe) {
+  var tf = String(timeframe || '').toLowerCase().replace(/^\s+|\s+$/g, '');
+  if (tf === 'now' || tf === 'current') {
+    return { type: 'current' };
+  }
+  if (tf === 'today') {
+    return { type: 'daily', offset: 0 };
+  }
+  if (tf === 'tomorrow') {
+    return { type: 'daily', offset: 1 };
+  }
+
+  var hourMatch = tf.match(/^\+(\d+)h$/);
+  if (hourMatch) {
+    return { type: 'hourly', offset: Number(hourMatch[1]) };
+  }
+
+  var dayMatch = tf.match(/^\+(\d+)d$/);
+  if (dayMatch) {
+    return { type: 'daily', offset: Number(dayMatch[1]) };
+  }
+
+  return { type: 'current' };
+}
+
+function findHourlyIndex(hourly, targetDate) {
+  var times = hourly && hourly.time ? hourly.time : [];
+  if (!times.length) {
+    return -1;
+  }
+  var target = targetDate.getTime();
+  var bestIndex = 0;
+  var bestDiff = Infinity;
+  for (var i = 0; i < times.length; i++) {
+    var t = new Date(times[i]).getTime();
+    var diff = Math.abs(t - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+function formatWeatherResult(place, data, timeframe) {
+  var tf = parseTimeframe(timeframe);
+  var locationName = place || 'Current location';
+  var lines = ['Weather for ' + locationName];
+
+  if (tf.type === 'current' && data.current) {
+    var current = data.current;
+    lines.push('Now: ' + Math.round(current.temperature_2m) + data.current_units.temperature_2m + ', ' + weatherCodeText(current.weather_code));
+    lines.push('Feels like ' + Math.round(current.apparent_temperature) + data.current_units.apparent_temperature);
+    lines.push('Wind ' + Math.round(current.wind_speed_10m) + data.current_units.wind_speed_10m + ', humidity ' + current.relative_humidity_2m + data.current_units.relative_humidity_2m);
+    if (current.precipitation > 0) {
+      lines.push('Precipitation ' + current.precipitation + data.current_units.precipitation);
+    }
+    return lines.join('\n');
+  }
+
+  if (tf.type === 'daily' && data.daily) {
+    var daily = data.daily;
+    var index = Math.max(0, Math.min(tf.offset, daily.time.length - 1));
+    var dayLabel = tf.offset === 0 ? 'Today' : (tf.offset === 1 ? 'Tomorrow' : daily.time[index]);
+    lines.push(dayLabel + ': ' + Math.round(daily.temperature_2m_min[index]) + '-' + Math.round(daily.temperature_2m_max[index]) + data.daily_units.temperature_2m_max + ', ' + weatherCodeText(daily.weather_code[index]));
+    lines.push('Rain chance ' + daily.precipitation_probability_max[index] + data.daily_units.precipitation_probability_max);
+    if (daily.precipitation_sum[index] > 0) {
+      lines.push('Precipitation ' + daily.precipitation_sum[index] + data.daily_units.precipitation_sum);
+    }
+    return lines.join('\n');
+  }
+
+  if (tf.type === 'hourly' && data.hourly) {
+    var target = new Date();
+    target.setTime(target.getTime() + tf.offset * 60 * 60 * 1000);
+    var hIndex = findHourlyIndex(data.hourly, target);
+    if (hIndex === -1) {
+      return lines.join('\n') + '\nForecast unavailable for requested time.';
+    }
+    var hourTime = new Date(data.hourly.time[hIndex]);
+    lines.push('At ' + hourTime.getHours() + ':00: ' + Math.round(data.hourly.temperature_2m[hIndex]) + data.hourly_units.temperature_2m + ', ' + weatherCodeText(data.hourly.weather_code[hIndex]));
+    lines.push('Rain chance ' + data.hourly.precipitation_probability[hIndex] + data.hourly_units.precipitation_probability + ', humidity ' + data.hourly.relative_humidity_2m[hIndex] + data.hourly_units.relative_humidity_2m);
+    return lines.join('\n');
+  }
+
+  return lines.join('\n') + '\nWeather data unavailable.';
+}
+
+function runWeatherTool(weather, generation, callback) {
+  if (!weather) {
+    callback(null, 'No weather request.');
+    return;
+  }
+
+  if (!getBoolSetting('EnableWeather', true)) {
+    callback(null, 'Weather tool disabled.');
+    return;
+  }
+
+  var place = weather.place ? String(weather.place).replace(/^\s+|\s+$/g, '') : '';
+  var timeframe = weather.timeframe || 'now';
+  sendToWatch({ Status: 'Getting weather...' });
+
+  function doFetch(lat, lon, resolvedPlace) {
+    sendToWatch({ Status: 'Getting weather...' });
+    var request = new XMLHttpRequest();
+    trackRequest(request, generation);
+    var url = OPENMETEO_FORECAST_URL +
+      '?latitude=' + encodeURIComponent(lat) +
+      '&longitude=' + encodeURIComponent(lon) +
+      '&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m' +
+      '&hourly=temperature_2m,relative_humidity_2m,weather_code,precipitation_probability' +
+      '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max' +
+      '&timezone=auto&forecast_days=7';
+
+    request.open('GET', url, true);
+    request.setRequestHeader('Accept', 'application/json');
+    request.timeout = 30000;
+
+    request.onload = function() {
+      untrackRequest(request);
+      if (!requestIsCurrent(request)) {
+        return;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        callback(null, 'Weather service failed (' + request.status + ').');
+        return;
+      }
+
+      try {
+        var json = JSON.parse(request.responseText);
+        var result = formatWeatherResult(resolvedPlace, json, timeframe);
+        callback(result, null);
+      } catch (err) {
+        callback(null, 'Bad weather response.');
+      }
+    };
+
+    request.onerror = function() {
+      untrackRequest(request);
+      if (!requestIsCurrent(request)) {
+        return;
+      }
+      callback(null, 'Weather network error.');
+    };
+
+    request.ontimeout = function() {
+      untrackRequest(request);
+      if (!requestIsCurrent(request)) {
+        return;
+      }
+      callback(null, 'Weather request timed out.');
+    };
+
+    request.send();
+  }
+
+  if (place) {
+    var geoRequest = new XMLHttpRequest();
+    trackRequest(geoRequest, generation);
+    geoRequest.open('GET', OPENMETEO_GEO_URL + '?name=' + encodeURIComponent(place) + '&count=1', true);
+    geoRequest.setRequestHeader('Accept', 'application/json');
+    geoRequest.timeout = 30000;
+
+    geoRequest.onload = function() {
+      untrackRequest(geoRequest);
+      if (!requestIsCurrent(geoRequest)) {
+        return;
+      }
+      if (geoRequest.status < 200 || geoRequest.status >= 300) {
+        callback(null, 'Geocoding failed (' + geoRequest.status + ').');
+        return;
+      }
+
+      try {
+        var geoJson = JSON.parse(geoRequest.responseText);
+        var results = geoJson.results || [];
+        if (results.length === 0) {
+          callback(null, 'Could not find place: ' + place);
+          return;
+        }
+        var result = results[0];
+        var resolvedPlace = result.name + (result.country ? ', ' + result.country : '');
+        doFetch(result.latitude, result.longitude, resolvedPlace);
+      } catch (err) {
+        callback(null, 'Bad geocoding response.');
+      }
+    };
+
+    geoRequest.onerror = function() {
+      untrackRequest(geoRequest);
+      if (!requestIsCurrent(geoRequest)) {
+        return;
+      }
+      callback(null, 'Geocoding network error.');
+    };
+
+    geoRequest.ontimeout = function() {
+      untrackRequest(geoRequest);
+      if (!requestIsCurrent(geoRequest)) {
+        return;
+      }
+      callback(null, 'Geocoding timed out.');
+    };
+
+    geoRequest.send();
+  } else {
+    callback(null, 'No place provided for weather lookup.');
+  }
+}
+
 function extractReplyFromPartialJson(content) {
   var marker = '"reply"';
   var markerIndex = content.indexOf(marker);
@@ -763,6 +1022,65 @@ function sendAssistantDelta(delta, chunkIndex, done) {
   });
 }
 
+function reverseGeocode(lat, lon, generation, callback) {
+  var request = new XMLHttpRequest();
+  trackRequest(request, generation);
+  var url = NOMINATIM_REVERSE_URL +
+    '?lat=' + encodeURIComponent(lat) +
+    '&lon=' + encodeURIComponent(lon) +
+    '&format=json&zoom=10&addressdetails=1';
+
+  request.open('GET', url, true);
+  request.setRequestHeader('Accept', 'application/json');
+  request.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+  request.timeout = 15000;
+
+  request.onload = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) {
+      return;
+    }
+    if (request.status < 200 || request.status >= 300) {
+      callback(null);
+      return;
+    }
+
+    try {
+      var json = JSON.parse(request.responseText);
+      var address = json.address || {};
+      var city = address.city || address.town || address.village || address.suburb || address.hamlet || '';
+      var region = address.state || address.county || address.region || address.province || '';
+      var country = address.country || '';
+      var parts = [];
+      if (city) parts.push(city);
+      if (region) parts.push(region);
+      if (country) parts.push(country);
+      var placeName = parts.length > 0 ? parts.join(', ') : (json.display_name || null);
+      callback(placeName);
+    } catch (err) {
+      callback(null);
+    }
+  };
+
+  request.onerror = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) {
+      return;
+    }
+    callback(null);
+  };
+
+  request.ontimeout = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) {
+      return;
+    }
+    callback(null);
+  };
+
+  request.send();
+}
+
 function getLocationContext(generation, callback) {
   if (!getBoolSetting('EnableLocation', false)) {
     callback('Location access disabled.');
@@ -779,8 +1097,19 @@ function getLocationContext(generation, callback) {
     if (generation !== requestGeneration) {
       return;
     }
-    callback('User location: latitude ' + pos.coords.latitude + ', longitude ' + pos.coords.longitude +
-      ', accuracy about ' + Math.round(pos.coords.accuracy || 0) + ' meters.');
+    var lat = pos.coords.latitude;
+    var lon = pos.coords.longitude;
+    var accuracy = Math.round(pos.coords.accuracy || 0);
+    reverseGeocode(lat, lon, generation, function(placeName) {
+      if (generation !== requestGeneration) {
+        return;
+      }
+      var context = 'User location: latitude ' + lat + ', longitude ' + lon + ', accuracy about ' + accuracy + ' meters.';
+      if (placeName) {
+        context += ' Approximate place: ' + placeName + '.';
+      }
+      callback(context);
+    });
   }, function(err) {
     if (generation !== requestGeneration) {
       return;
@@ -1008,11 +1337,11 @@ function callModelStream(messages, generation, callback) {
 
     var parsed = parseAssistantContent(fullContent);
     var finalReply = parsed.reply || extractReplyFromPartialJson(fullContent);
-    if (!finalReply && !parsed.search && !parsed.calc) {
+    if (!finalReply && !parsed.search && !parsed.calc && !parsed.weather) {
       finalReply = 'No response.';
     }
     debugLog('stream final replyLen=' + String(finalReply || '').length + ' search=' + !!parsed.search + ' notes=' + !!parsed.notes + ' prefix=' + clip(finalReply, 180));
-    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.calc)) {
+    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.calc && !parsed.weather)) {
       startNonStreamingFallback('empty-final');
       return;
     }
@@ -1172,9 +1501,10 @@ function callOpenRouter(prompt) {
   sendToWatch({ Status: 'Thinking...' });
   getLocationContext(generation, function(locationContext) {
     var searchAvailable = getBoolSetting('EnableSearch', false) && !!getSetting('BraveSearchApiKey', '');
-    debugLog('context ready searchAvailable=' + searchAvailable + ' locationContext=' + clip(locationContext, 120));
-    var contextText = locationContext + '\nSearch available: ' + (searchAvailable ? 'yes, request search with the search field when needed.' : 'no.') ;
-    var firstMessages = buildMessages(prompt, contextText, null, null);
+    var weatherAvailable = getBoolSetting('EnableWeather', true);
+    debugLog('context ready searchAvailable=' + searchAvailable + ' weatherAvailable=' + weatherAvailable + ' locationContext=' + clip(locationContext, 120));
+    var contextText = locationContext + '\nSearch available: ' + (searchAvailable ? 'yes, request search with the search field when needed.' : 'no.') + '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
+    var firstMessages = buildMessages(prompt, contextText, null, null, null);
 
     callModelStream(firstMessages, generation, function(parsed, alreadySent) {
       if (parsed.search) {
@@ -1184,8 +1514,23 @@ function callOpenRouter(prompt) {
             return;
           }
           sendToWatch({ Status: 'Thinking...' });
-          var secondMessages = buildMessages(prompt, contextText, searchResultsText, null);
+          var secondMessages = buildMessages(prompt, contextText, searchResultsText, null, null);
           callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
+            finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
+          });
+        });
+        return;
+      }
+
+      if (parsed.weather) {
+        runWeatherTool(parsed.weather, generation, function(weatherResultsText, weatherError) {
+          if (weatherError) {
+            showError(weatherError, 'Weather request: ' + JSON.stringify(parsed.weather));
+            return;
+          }
+          sendToWatch({ Status: 'Thinking...' });
+          var weatherMessages = buildMessages(prompt, contextText, null, null, weatherResultsText);
+          callModelStream(weatherMessages, generation, function(finalParsed, finalAlreadySent) {
             finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
           });
         });
@@ -1201,7 +1546,7 @@ function callOpenRouter(prompt) {
           var calculatorResultsText = runCalculatorTool(parsed.calc);
           debugLog('calculator tool result=' + calculatorResultsText);
           sendToWatch({ Status: 'Calculating...' });
-          var calculatorMessages = buildMessages(prompt, contextText, null, calculatorResultsText);
+          var calculatorMessages = buildMessages(prompt, contextText, null, calculatorResultsText, null);
           callModelStream(calculatorMessages, generation, function(finalParsed, finalAlreadySent) {
             finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
           });
@@ -1355,6 +1700,14 @@ Pebble.addEventListener('appmessage', function(e) {
     return;
   }
 
+  if (e.payload && e.payload.ToggleWeather) {
+    var weatherEnabled = toggleBoolSetting('EnableWeather', true);
+    sendToWatch({ Status: weatherEnabled ? 'Weather on' : 'Weather off' });
+    sendToolStatesToWatch();
+    sendStatsToWatch();
+    return;
+  }
+
   if (e.payload && e.payload.OpenSessions) {
     sendToWatch({ OpenSessions: sessionsToText() });
     return;
@@ -1393,6 +1746,7 @@ Pebble.addEventListener('showConfiguration', function() {
     EnableMemory: getBoolSetting('EnableMemory', true),
     EnableCalculator: getBoolSetting('EnableCalculator', true),
     EnableSearch: getBoolSetting('EnableSearch', false),
+    EnableWeather: getBoolSetting('EnableWeather', true),
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),
     DebugLog: localStorage.getItem('DebugLog') || ''
   });
