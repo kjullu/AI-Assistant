@@ -59,6 +59,12 @@ module.exports = [
         "defaultValue": true
       },
       {
+        "type": "toggle",
+        "messageKey": "EnableWeather",
+        "label": "Enable Weather",
+        "defaultValue": true
+      },
+      {
         "type": "input",
         "messageKey": "BraveSearchApiKey",
         "label": "Brave Search API Key",

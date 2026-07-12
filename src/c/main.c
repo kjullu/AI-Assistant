@@ -69,6 +69,7 @@ static bool s_location_enabled;
 static bool s_memory_enabled = true;
 static bool s_calculator_enabled = true;
 static bool s_search_enabled;
+static bool s_weather_enabled = true;
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 static AppTimer *s_touch_long_timer;
 static bool s_touch_long_fired;
@@ -288,7 +289,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 4;
+  return 5;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -305,9 +306,13 @@ static void get_settings_row(int8_t index, SettingRow *out) {
       out->label = "Calculator";
       out->enabled = s_calculator_enabled;
       break;
-    default:
+    case 3:
       out->label = "Search";
       out->enabled = s_search_enabled;
+      break;
+    default:
+      out->label = "Weather";
+      out->enabled = s_weather_enabled;
       break;
   }
 }
@@ -715,7 +720,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (status_tuple) {
     status = status_tuple->value->cstring;
     //AI: When a tool is running, reset the response flag so the real answer vibrates later.
-    if (strcmp(status, "Searching...") == 0 || strcmp(status, "Calculating...") == 0) {
+    if (strcmp(status, "Searching...") == 0 || strcmp(status, "Calculating...") == 0 ||
+        strcmp(status, "Getting weather...") == 0 || strcmp(status, "Getting location...") == 0) {
       s_response_started = false;
     }
   }
@@ -773,7 +779,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   } else if (status_tuple && (strcmp(status, "Location on") == 0 || strcmp(status, "Location off") == 0 ||
                               strcmp(status, "Memory on") == 0 || strcmp(status, "Memory off") == 0 ||
                               strcmp(status, "Calculator on") == 0 || strcmp(status, "Calculator off") == 0 ||
-                              strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0)) {
+                              strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0 ||
+                              strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0)) {
     vibes_short_pulse();
     status = "Ready";
   }
@@ -789,6 +796,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_memory_enabled = strstr(states, "memory=1") != NULL;
     s_calculator_enabled = strstr(states, "calculator=1") != NULL;
     s_search_enabled = strstr(states, "search=1") != NULL;
+    s_weather_enabled = strstr(states, "weather=1") != NULL;
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -881,7 +889,7 @@ static void down_long_click_handler(ClickRecognizerRef recognizer, void *context
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_show_settings) {
-    s_settings_selection = (s_settings_selection + 3) % 4;
+    s_settings_selection = (s_settings_selection + 4) % 5;
     update_display("Ready");
   } else if (s_show_home) {
     open_settings_screen();
@@ -893,7 +901,7 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_show_settings) {
-    s_settings_selection = (s_settings_selection + 1) % 4;
+    s_settings_selection = (s_settings_selection + 1) % 5;
     update_display("Ready");
   } else if (s_show_home) {
     open_sessions_screen();
@@ -916,6 +924,9 @@ static void toggle_selected_setting(void) {
       break;
     case 3:
       send_simple_command(MESSAGE_KEY_ToggleSearch, "Toggle failed");
+      break;
+    case 4:
+      send_simple_command(MESSAGE_KEY_ToggleWeather, "Toggle failed");
       break;
   }
 }
