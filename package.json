@@ -16,7 +16,8 @@
     "enableMultiJS": true,
     "capabilities": [
       "configurable",
-      "location"
+      "location",
+      "timeline"
     ],
     "targetPlatforms": [
       "basalt",

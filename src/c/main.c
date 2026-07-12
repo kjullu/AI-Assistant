@@ -56,7 +56,7 @@ static char s_chat_history[CHAT_HISTORY_BUFFER_SIZE];
 static char *s_current_ai_response_start = NULL;
 static char s_status_text[64];
 static char s_stats_text[STATS_BUFFER_SIZE];
-static char s_sessions_text[1600];
+static char s_sessions_text[4096];
 static bool s_start_dictation_on_appear;
 static bool s_show_home = true;
 static bool s_request_active;
@@ -669,6 +669,11 @@ static void send_prompt(const char *prompt) {
     return;
   }
 
+  // If a request is still running, cancel it so responses don't interleave.
+  if (s_request_active) {
+    send_simple_command(MESSAGE_KEY_CancelRequest, "Cancel failed");
+  }
+
   // Store the latest prompt locally and clear the previous assistant reply.
   snprintf(s_last_prompt, sizeof(s_last_prompt), "%s", prompt);
   s_assistant_response[0] = '\0';
@@ -688,6 +693,7 @@ static void send_prompt(const char *prompt) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
   if (result != APP_MSG_OK || !iter) {
+    s_request_active = false;
     update_display("Phone not ready");
     return;
   }
@@ -697,6 +703,7 @@ static void send_prompt(const char *prompt) {
   dict_write_end(iter);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
+    s_request_active = false;
     update_display("Send failed");
     vibes_double_pulse();
   }
@@ -1151,7 +1158,7 @@ static void init(void) {
   app_message_register_inbox_received(inbox_received_callback); //USR: IDK, something with the AppMessage?
   //AI: Register the function that should run when a message arrives from the phone.
   app_message_open(4096, 2048); //USR: AGAIN, something with the AppMessage?
-  //AI: Open AppMessage and reserve 2048 bytes for incoming messages and 1024 for outgoing ones.
+  //AI: Open AppMessage with a 4096-byte inbox and a 2048-byte outbox.
 
   s_dictation_session = dictation_session_create(DICTATION_BUFFER_SIZE, dictation_callback, NULL); //USR: Start the dictation deamon? with a buffersize?
   //AI: Create a dictation session; Pebble will call dictation_callback when speech recognition finishes.
