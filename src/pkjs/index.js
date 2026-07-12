@@ -524,7 +524,7 @@ function buildSystemPrompt() {
   return prompt;
 }
 
-function buildMessages(prompt, contextText, searchResultsText, calculatorResultsText, weatherResultsText) {
+function buildMessages(contextText) {
   var messages = [
     { role: 'system', content: buildSystemPrompt() },
     { role: 'system', content: 'Current local time is ' + new Date().toString() + '.' }
@@ -534,21 +534,11 @@ function buildMessages(prompt, contextText, searchResultsText, calculatorResults
     messages.push({ role: 'system', content: contextText });
   }
   messages.push({ role: 'system', content: buildNotesContext() });
-  if (searchResultsText) {
-    messages.push({ role: 'system', content: searchResultsText });
-  }
-  if (calculatorResultsText) {
-    messages.push({ role: 'system', content: calculatorResultsText });
-  }
-  if (weatherResultsText) {
-    messages.push({ role: 'system', content: weatherResultsText });
-  }
 
   var start = Math.max(0, conversationHistory.length - 6);
   for (var i = start; i < conversationHistory.length; i++) {
     messages.push(conversationHistory[i]);
   }
-  messages.push({ role: 'user', content: prompt });
   return messages;
 }
 
@@ -1465,10 +1455,15 @@ function braveSearch(query, generation, callback) {
   request.send();
 }
 
-function finishAssistantTurn(prompt, parsed, alreadySent) {
+function finishAssistantTurn(prompt, toolEntries, parsed, alreadySent) {
   var reply = parsed.reply || 'No response.';
   debugLog('finishAssistantTurn alreadySent=' + alreadySent + ' replyLen=' + reply.length + ' prefix=' + clip(reply, 180));
   conversationHistory.push({ role: 'user', content: prompt });
+  if (toolEntries) {
+    for (var j = 0; j < toolEntries.length; j++) {
+      conversationHistory.push(toolEntries[j]);
+    }
+  }
   conversationHistory.push({ role: 'assistant', content: reply });
   if (conversationHistory.length > 12) {
     conversationHistory = conversationHistory.slice(conversationHistory.length - 12);
@@ -1504,34 +1499,41 @@ function callOpenRouter(prompt) {
     var weatherAvailable = getBoolSetting('EnableWeather', true);
     debugLog('context ready searchAvailable=' + searchAvailable + ' weatherAvailable=' + weatherAvailable + ' locationContext=' + clip(locationContext, 120));
     var contextText = locationContext + '\nSearch available: ' + (searchAvailable ? 'yes, request search with the search field when needed.' : 'no.') + '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
-    var firstMessages = buildMessages(prompt, contextText, null, null, null);
+
+    var baseMessages = buildMessages(contextText);
+    var userMessage = { role: 'user', content: prompt };
+    var firstMessages = baseMessages.concat([userMessage]);
 
     callModelStream(firstMessages, generation, function(parsed, alreadySent) {
       if (parsed.search) {
+        var searchRequest = { role: 'assistant', content: JSON.stringify({ search: parsed.search }) };
         braveSearch(String(parsed.search), generation, function(searchResultsText, searchError) {
           if (searchError) {
             showError(searchError, 'Search query: ' + parsed.search);
             return;
           }
           sendToWatch({ Status: 'Thinking...' });
-          var secondMessages = buildMessages(prompt, contextText, searchResultsText, null, null);
+          var searchResultEntry = { role: 'tool', content: searchResultsText };
+          var secondMessages = baseMessages.concat([userMessage, searchRequest, searchResultEntry]);
           callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
+            finishAssistantTurn(prompt, [searchRequest, searchResultEntry], finalParsed, finalAlreadySent);
           });
         });
         return;
       }
 
       if (parsed.weather) {
+        var weatherRequest = { role: 'assistant', content: JSON.stringify({ weather: parsed.weather }) };
         runWeatherTool(parsed.weather, generation, function(weatherResultsText, weatherError) {
           if (weatherError) {
             showError(weatherError, 'Weather request: ' + JSON.stringify(parsed.weather));
             return;
           }
           sendToWatch({ Status: 'Thinking...' });
-          var weatherMessages = buildMessages(prompt, contextText, null, null, weatherResultsText);
+          var weatherResultEntry = { role: 'tool', content: weatherResultsText };
+          var weatherMessages = baseMessages.concat([userMessage, weatherRequest, weatherResultEntry]);
           callModelStream(weatherMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
+            finishAssistantTurn(prompt, [weatherRequest, weatherResultEntry], finalParsed, finalAlreadySent);
           });
         });
         return;
@@ -1545,17 +1547,19 @@ function callOpenRouter(prompt) {
         try {
           var calculatorResultsText = runCalculatorTool(parsed.calc);
           debugLog('calculator tool result=' + calculatorResultsText);
+          var calcRequest = { role: 'assistant', content: JSON.stringify({ calc: parsed.calc }) };
+          var calcResultEntry = { role: 'tool', content: calculatorResultsText };
           sendToWatch({ Status: 'Calculating...' });
-          var calculatorMessages = buildMessages(prompt, contextText, null, calculatorResultsText, null);
+          var calculatorMessages = baseMessages.concat([userMessage, calcRequest, calcResultEntry]);
           callModelStream(calculatorMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, finalParsed, finalAlreadySent);
+            finishAssistantTurn(prompt, [calcRequest, calcResultEntry], finalParsed, finalAlreadySent);
           });
         } catch (err) {
           showError('Calculator failed.', err.message);
         }
         return;
       }
-      finishAssistantTurn(prompt, parsed, alreadySent);
+      finishAssistantTurn(prompt, [], parsed, alreadySent);
     });
   });
 }
