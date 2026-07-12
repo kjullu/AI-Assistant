@@ -350,6 +350,26 @@ function sessionsToText() {
   return lines.join('\n');
 }
 
+function sessionsToWatchText() {
+  var sessions = getSessions();
+  if (sessions.length === 0) {
+    return 'No saved sessions yet.';
+  }
+
+  var lines = [];
+  var watchCount = 5;
+  var start = Math.max(0, sessions.length - watchCount);
+  for (var i = start; i < sessions.length; i++) {
+    lines.push('Session ' + (i + 1));
+    lines.push(sessions[i].createdAt);
+    lines.push(clip(sessions[i].summary || '(empty)', 300));
+    if (i !== sessions.length - 1) {
+      lines.push('---');
+    }
+  }
+  return lines.join('\n');
+}
+
 function saveSessionsFromText(text) {
   var chunks = String(text || '').split('\n---\n');
   var sessions = [];
@@ -359,9 +379,16 @@ function saveSessionsFromText(text) {
       continue;
     }
     var lines = chunk.split('\n');
-    if (lines.length >= 2) {
+    var header = lines[0] || '';
+    var date = lines[1] || '';
+    if (/^Session\s+\d+/i.test(header) && /^\d{4}-\d{2}-\d{2}T/.test(date)) {
       sessions.push({
-        createdAt: lines[0].replace(/^Session\s+\d+\s+\|\s+/, ''),
+        createdAt: date,
+        summary: lines.slice(2).join('\n')
+      });
+    } else if (/^\d{4}-\d{2}-\d{2}T/.test(header)) {
+      sessions.push({
+        createdAt: header,
         summary: lines.slice(1).join('\n')
       });
     }
@@ -1713,7 +1740,7 @@ Pebble.addEventListener('appmessage', function(e) {
   }
 
   if (e.payload && e.payload.OpenSessions) {
-    sendToWatch({ OpenSessions: sessionsToText() });
+    sendToWatch({ OpenSessions: sessionsToWatchText() });
     return;
   }
 
