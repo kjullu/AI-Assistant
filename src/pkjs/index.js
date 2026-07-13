@@ -432,7 +432,7 @@ function saveNotesFromText(text) {
   saveNotes(notes);
 }
 
-function addNotes(notesToAdd) {
+function appendNotesTo(notes, notesToAdd) {
   if (!notesToAdd) {
     return;
   }
@@ -441,13 +441,66 @@ function addNotes(notesToAdd) {
     notesToAdd = [notesToAdd];
   }
 
-  var notes = getNotes();
   for (var i = 0; i < notesToAdd.length; i++) {
-    var text = clip(notesToAdd[i], MAX_NOTE_CHARS).replace(/^\s+|\s+$/g, '');
+    var text = clip(String(notesToAdd[i] || ''), MAX_NOTE_CHARS).replace(/^\s+|\s+$/g, '');
     if (text) {
       notes.push({ text: text, createdAt: new Date().toISOString() });
     }
   }
+}
+
+function addNotes(notesToAdd) {
+  if (!notesToAdd) {
+    return;
+  }
+
+  var notes = getNotes();
+  appendNotesTo(notes, notesToAdd);
+  saveNotes(notes);
+}
+
+function applyMemoryChanges(memory) {
+  if (!memory) {
+    return;
+  }
+
+  // Legacy/simple format: a single note string or array of strings appends only.
+  if (typeof memory === 'string' || memory instanceof Array) {
+    addNotes(memory);
+    return;
+  }
+
+  if (typeof memory !== 'object') {
+    return;
+  }
+
+  var notes = getNotes();
+
+  if (memory.replace instanceof Array) {
+    for (var i = 0; i < memory.replace.length; i++) {
+      var op = memory.replace[i];
+      if (!op || typeof op !== 'object') {
+        continue;
+      }
+      var index = parseInt(op.index, 10);
+      if (isNaN(index) || index < 0 || index >= notes.length) {
+        debugLog('Memory replace ignored: invalid index ' + op.index);
+        continue;
+      }
+      var text = clip(String(op.text || ''), MAX_NOTE_CHARS).replace(/^\s+|\s+$/g, '');
+      if (!text) {
+        debugLog('Memory replace ignored: empty text at index ' + index);
+        continue;
+      }
+      notes[index] = { text: text, createdAt: new Date().toISOString() };
+      debugLog('Memory replaced index ' + index);
+    }
+  }
+
+  if (memory.add) {
+    appendNotesTo(notes, memory.add);
+  }
+
   saveNotes(notes);
 }
 
@@ -541,7 +594,7 @@ function buildSystemPrompt() {
     'Search tool: if current web info is needed and search is available, return {"reply":"","timeline":null,"search":"short query","notes":null,"calc":null,"weather":null}. Request search at most once; after results are provided, answer and set search null.',
     'Weather tool: if weather info is needed and weather is available, return {"reply":"","timeline":null,"search":null,"notes":null,"calc":null,"weather":{"place":"city name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}}. The place must always be provided by you; never auto-fetch the user\'s location. If the user did not specify a place, ask them to name one and keep weather null. Use timeframe "now" for current weather, "today" or "tomorrow" for the day, or "+3h"/"+2d" for a specific offset. Request weather at most once; after results are provided, answer and set weather null.',
     'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
-    'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Put short note strings in notes. Do not duplicate existing memory or store temporary facts. The notes are your database; add things you think are important.',
+    'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Put short note strings in notes, or use {"add":["new note"], "replace":[{"index":0,"text":"updated note"}]} to update existing memory. Do not duplicate existing memory or store temporary facts. The notes are your database; add things you think are important.',
     'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, leave reply empty and return calc as either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}. After the result is provided, answer and set calc null.'
   ].join(' ');
   var extra = getSetting('ExtraSystemPrompt', '');
@@ -1506,7 +1559,7 @@ function finishAssistantTurn(prompt, toolEntries, parsed, alreadySent) {
 
   if (parsed.notes) {
     if (getBoolSetting('EnableMemory', true)) {
-      addNotes(parsed.notes);
+      applyMemoryChanges(parsed.notes);
     }
   }
 
