@@ -1,5 +1,8 @@
 # Agent Guidelines
 
+## Pebble
+pebble SDK is at: `/home/mikkel/Projects/playground/Pebble-AI-Assistant/.venv/bin/pebble`
+
 ## Keep the changelog up to date
 
 Whenever you add, change, or fix any user-facing behavior, update `CHANGELOG.md` before finishing.
