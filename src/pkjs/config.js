@@ -91,7 +91,7 @@ module.exports = [
         "type": "input",
         "messageKey": "ExtraSystemPrompt",
         "label": "Extra System Prompt",
-        "description": "Optional extra instructions added after the built-in prompt.",
+        "description": "Optional system-level instructions added as a separate message.",
         "attributes": {
           "placeholder": "Example: Be terse and use Danish when I ask in Danish."
         }

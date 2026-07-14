@@ -587,21 +587,16 @@ function saveSettings(convertedSettings, rawSettings) {
 }
 
 function buildSystemPrompt() {
-  var prompt = [
-    'You are a practical assistant for a Pebble watch. Replies must be useful, compact, and readable on a tiny screen. Do not use markdown, write in plain text.',
-    'Return only valid JSON in this shape: {"reply":"watch answer","timeline":null,"search":null,"notes":null,"calc":null,"weather":null}.',
-    'Use 24-hour time. Use the provided current time, location context, search results, weather results, and notes/memory when relevant.',
-    'Search tool: if current web info is needed and search is available, return {"reply":"","timeline":null,"search":"short query","notes":null,"calc":null,"weather":null}. Request search at most once; after results are provided, answer and set search null.',
-    'Weather tool: if weather info is needed and weather is available, return {"reply":"","timeline":null,"search":null,"notes":null,"calc":null,"weather":{"place":"city name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}}. The place must always be provided by you; never auto-fetch the user\'s location. If the user did not specify a place, ask them to name one and keep weather null. Use timeframe "now" for current weather, "today" or "tomorrow" for the day, or "+3h"/"+2d" for a specific offset. Request weather at most once; after results are provided, answer and set weather null.',
+  return [
+    'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {"reply":"watch-friendly answer","timeline":null,"search":null,"notes":null,"calc":null,"weather":null}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
+    'Apply the provided current time, location context, search results, weather results, and notes/memory when relevant.',
+    'Tool rules: request each tool at most once per turn. After you receive the result, answer and set that tool field back to null.',
+    'Search tool: if current web info is needed and search is available, set search to a short query; otherwise keep it null.',
+    'Weather tool: if weather info is needed and weather is available, set weather to {"place":"city name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.',
     'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
-    'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Put short note strings in notes, or use {"add":["new note"], "replace":[{"index":0,"text":"updated note"}]} to update existing memory. Do not duplicate existing memory or store temporary facts. The notes are your database; add things you think are important.',
-    'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, leave reply empty and return calc as either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}. After the result is provided, answer and set calc null.'
+    'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Use short note strings, or {"add":["new note"],"replace":[{"index":0,"text":"updated note"}]} to edit. Do not duplicate existing memory or store temporary facts. Notes are your memory; add important things.',
+    'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, set calc to either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}, then answer after the result is provided and set calc null.'
   ].join(' ');
-  var extra = getSetting('ExtraSystemPrompt', '');
-  if (extra) {
-    prompt += ' User extra instructions: \"' + extra + '"';
-  }
-  return prompt;
 }
 
 function buildMessages(contextText) {
@@ -614,6 +609,11 @@ function buildMessages(contextText) {
     messages.push({ role: 'system', content: contextText });
   }
   messages.push({ role: 'system', content: buildNotesContext() });
+
+  var extra = getSetting('ExtraSystemPrompt', '');
+  if (extra) {
+    messages.push({ role: 'system', content: extra });
+  }
 
   var start = Math.max(0, conversationHistory.length - 6);
   for (var i = start; i < conversationHistory.length; i++) {
