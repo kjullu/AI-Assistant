@@ -2,6 +2,7 @@
 
 - Add Firecrawl scrape tool for fetching page content as a tool result.
 - Weather tool can now accept location instead of just city.
+- Only include tool explanations and JSON fields in the system prompt when the tool is enabled.
 
 # Changelog 0.2.0
 
