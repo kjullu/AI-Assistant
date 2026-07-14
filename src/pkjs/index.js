@@ -6,6 +6,7 @@ var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 var OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 var OPENROUTER_CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
 var BRAVE_SEARCH_URL = 'https://api.search.brave.com/res/v1/web/search';
+var FIRECRAWL_SCRAPE_URL = 'https://api.firecrawl.dev/v1/scrape';
 var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
@@ -33,6 +34,7 @@ var REGION_FALLBACKS = {
 var DEFAULT_MODEL = 'moonshotai/kimi-k2.5';
 var RESPONSE_CHUNK_CHARS = 600;
 var MAX_SEARCH_RESULTS = 3;
+var MAX_SCRAPE_CHARS = 4000;
 var MAX_NOTES = 30;
 var MAX_NOTE_CHARS = 240;
 var MAX_SESSIONS = 20;
@@ -166,6 +168,10 @@ function getBoolSetting(key, fallback) {
   return value === true || value === 1 || value === '1' || value === 'true';
 }
 
+function getScrapeAvailable() {
+  return getBoolSetting('EnableScrape', false) && !!getSetting('FirecrawlApiKey', '');
+}
+
 function statsMonthKey() {
   var now = new Date();
   return now.getUTCFullYear() + '-' + ('0' + (now.getUTCMonth() + 1)).slice(-2);
@@ -265,6 +271,7 @@ function sendToolStatesToWatch() {
       ';memory=' + (getBoolSetting('EnableMemory', true) ? '1' : '0') +
       ';calculator=' + (getBoolSetting('EnableCalculator', true) ? '1' : '0') +
       ';search=' + (getBoolSetting('EnableSearch', false) ? '1' : '0') +
+      ';scrape=' + (getScrapeAvailable() ? '1' : '0') +
       ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0')
   });
 }
@@ -562,7 +569,9 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableCalculator = settingValue(convertedSettings, rawSettings, 'EnableCalculator', messageKeys.EnableCalculator);
   var enableSearch = settingValue(convertedSettings, rawSettings, 'EnableSearch', messageKeys.EnableSearch);
   var enableWeather = settingValue(convertedSettings, rawSettings, 'EnableWeather', messageKeys.EnableWeather);
+  var enableScrape = settingValue(convertedSettings, rawSettings, 'EnableScrape', messageKeys.EnableScrape);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
+  var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
   var notesMemoryText = settingValue(convertedSettings, rawSettings, 'NotesMemoryText', messageKeys.NotesMemoryText);
   var sessionsText = settingValue(convertedSettings, rawSettings, 'OpenSessions', messageKeys.OpenSessions);
@@ -591,8 +600,14 @@ function saveSettings(convertedSettings, rawSettings) {
   if (enableWeather !== undefined) {
     localStorage.setItem('EnableWeather', String(enableWeather ? 1 : 0));
   }
+  if (enableScrape !== undefined) {
+    localStorage.setItem('EnableScrape', String(enableScrape ? 1 : 0));
+  }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());
+  }
+  if (firecrawlApiKey !== undefined) {
+    localStorage.setItem('FirecrawlApiKey', String(firecrawlApiKey).trim());
   }
   if (extraSystemPrompt !== undefined) {
     localStorage.setItem('ExtraSystemPrompt', String(extraSystemPrompt).trim());
@@ -608,10 +623,11 @@ function saveSettings(convertedSettings, rawSettings) {
 
 function buildSystemPrompt() {
   return [
-    'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {"reply":"watch-friendly answer","timeline":null,"search":null,"notes":null,"calc":null,"weather":null}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
-    'Apply the provided current time, location context, search results, weather results, and notes/memory when relevant.',
+    'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {"reply":"watch-friendly answer","timeline":null,"search":null,"scrape":null,"notes":null,"calc":null,"weather":null}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
+    'Apply the provided current time, location context, search results, scrape results, weather results, and notes/memory when relevant.',
     'Tool rules: request each tool at most once per turn. After you receive the result, answer and set that tool field back to null.',
-    'Search tool: if current web info is needed and search is available, set search to a short query; otherwise keep it null.',
+    'Brave Search tool: if current web info is needed and search is available, set search to a short query; otherwise keep it null.',
+    'Firecrawl scrape tool: if you need the full content of a specific web page and scrape is available, set scrape to the page URL; otherwise keep it null.',
     'Weather tool: if weather info is needed and weather is available, set weather to {"place":"city or region name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. Accept named regions like states, countries, or broad areas such as "central Europe". The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.',
     'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
     'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Use short note strings, or {"add":["new note"],"replace":[{"index":0,"text":"updated note"}]} to edit. Do not duplicate existing memory or store temporary facts. Notes are your memory; add important things.',
@@ -656,6 +672,7 @@ function parseAssistantContent(content) {
       reply: String(parsed.reply || ''),
       timeline: parsed.timeline || null,
       search: parsed.search || null,
+      scrape: parsed.scrape || null,
       notes: parsed.notes || null,
       calc: parsed.calc || null,
       weather: parsed.weather || null
@@ -665,6 +682,7 @@ function parseAssistantContent(content) {
       reply: String(content || ''),
       timeline: null,
       search: null,
+      scrape: null,
       notes: null,
       calc: null,
       weather: null
@@ -1447,11 +1465,11 @@ function callModelStream(messages, generation, callback) {
 
     var parsed = parseAssistantContent(fullContent);
     var finalReply = parsed.reply || extractReplyFromPartialJson(fullContent);
-    if (!finalReply && !parsed.search && !parsed.calc && !parsed.weather) {
+    if (!finalReply && !parsed.search && !parsed.scrape && !parsed.calc && !parsed.weather) {
       finalReply = 'No response.';
     }
-    debugLog('stream final replyLen=' + String(finalReply || '').length + ' search=' + !!parsed.search + ' notes=' + !!parsed.notes + ' prefix=' + clip(finalReply, 180));
-    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.calc && !parsed.weather)) {
+    debugLog('stream final replyLen=' + String(finalReply || '').length + ' search=' + !!parsed.search + ' scrape=' + !!parsed.scrape + ' notes=' + !!parsed.notes + ' prefix=' + clip(finalReply, 180));
+    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.scrape && !parsed.calc && !parsed.weather)) {
       startNonStreamingFallback('empty-final');
       return;
     }
@@ -1575,6 +1593,80 @@ function braveSearch(query, generation, callback) {
   request.send();
 }
 
+function firecrawlScrape(url, generation, callback) {
+  var apiKey = getSetting('FirecrawlApiKey', '');
+  debugLog('firecrawlScrape start url=' + url + ' generation=' + generation);
+  if (!getBoolSetting('EnableScrape', false) || !apiKey) {
+    callback(null, 'Scrape unavailable. Add Firecrawl key in settings.');
+    return;
+  }
+
+  sendToWatch({ Status: 'Scraping...' });
+  incrementStat('searches');
+  sendStatsToWatch();
+  var request = new XMLHttpRequest();
+  trackRequest(request, generation);
+  request.open('POST', FIRECRAWL_SCRAPE_URL, true);
+  request.setRequestHeader('Content-Type', 'application/json');
+  request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+  request.timeout = 30000;
+
+  request.onload = function() {
+    untrackRequest(request);
+    debugLog('firecrawlScrape onload status=' + request.status + ' current=' + requestIsCurrent(request));
+    if (!requestIsCurrent(request)) {
+      return;
+    }
+    if (request.status < 200 || request.status >= 300) {
+      callback(null, 'Firecrawl scrape failed (' + request.status + ').');
+      return;
+    }
+
+    try {
+      var json = JSON.parse(request.responseText);
+      if (!json.success || !json.data) {
+        callback(null, 'Firecrawl scrape returned no content.');
+        return;
+      }
+      var title = json.data.metadata && json.data.metadata.title ? json.data.metadata.title : '';
+      var markdown = String(json.data.markdown || '');
+      var lines = ['Scraped page: ' + url];
+      if (title) {
+        lines.push('Title: ' + title);
+      }
+      if (markdown) {
+        if (markdown.length > MAX_SCRAPE_CHARS) {
+          markdown = markdown.substring(0, MAX_SCRAPE_CHARS) + '\n... (truncated)';
+        }
+        lines.push(markdown);
+      } else {
+        lines.push('No readable content found.');
+      }
+      callback(lines.join('\n'), null);
+    } catch (err) {
+      callback(null, 'Bad scrape response.');
+    }
+  };
+
+  request.onerror = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) {
+      return;
+    }
+    callback(null, 'Scrape network error.');
+  };
+
+  request.ontimeout = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) {
+      return;
+    }
+    callback(null, 'Scrape timed out.');
+  };
+
+  request.send(JSON.stringify({ url: url, formats: ['markdown'] }));
+}
+
 function finishAssistantTurn(prompt, toolEntries, parsed, alreadySent) {
   var reply = parsed.reply || 'No response.';
   debugLog('finishAssistantTurn alreadySent=' + alreadySent + ' replyLen=' + reply.length + ' prefix=' + clip(reply, 180));
@@ -1616,9 +1708,13 @@ function callOpenRouter(prompt) {
   sendToWatch({ Status: 'Thinking...' });
   getLocationContext(generation, function(locationContext) {
     var searchAvailable = getBoolSetting('EnableSearch', false) && !!getSetting('BraveSearchApiKey', '');
+    var scrapeAvailable = getScrapeAvailable();
     var weatherAvailable = getBoolSetting('EnableWeather', true);
-    debugLog('context ready searchAvailable=' + searchAvailable + ' weatherAvailable=' + weatherAvailable + ' locationContext=' + clip(locationContext, 120));
-    var contextText = locationContext + '\nSearch available: ' + (searchAvailable ? 'yes, request search with the search field when needed.' : 'no.') + '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
+    debugLog('context ready searchAvailable=' + searchAvailable + ' scrapeAvailable=' + scrapeAvailable + ' weatherAvailable=' + weatherAvailable + ' locationContext=' + clip(locationContext, 120));
+    var contextText = locationContext +
+      '\nSearch available: ' + (searchAvailable ? 'yes, request Brave Search with the search field when needed.' : 'no.') +
+      '\nScrape available: ' + (scrapeAvailable ? 'yes, request Firecrawl scrape with the scrape field when needed.' : 'no.') +
+      '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
 
     var baseMessages = buildMessages(contextText);
     var userMessage = { role: 'user', content: prompt };
@@ -1637,6 +1733,23 @@ function callOpenRouter(prompt) {
           var secondMessages = baseMessages.concat([userMessage, searchRequest, searchResultEntry]);
           callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
             finishAssistantTurn(prompt, [searchRequest, searchResultEntry], finalParsed, finalAlreadySent);
+          });
+        });
+        return;
+      }
+
+      if (parsed.scrape) {
+        var scrapeRequest = { role: 'assistant', content: JSON.stringify({ scrape: parsed.scrape }) };
+        firecrawlScrape(String(parsed.scrape), generation, function(scrapeResultsText, scrapeError) {
+          if (scrapeError) {
+            showError(scrapeError, 'Scrape URL: ' + parsed.scrape);
+            return;
+          }
+          sendToWatch({ Status: 'Thinking...' });
+          var scrapeResultEntry = { role: 'tool', content: scrapeResultsText };
+          var scrapeMessages = baseMessages.concat([userMessage, scrapeRequest, scrapeResultEntry]);
+          callModelStream(scrapeMessages, generation, function(finalParsed, finalAlreadySent) {
+            finishAssistantTurn(prompt, [scrapeRequest, scrapeResultEntry], finalParsed, finalAlreadySent);
           });
         });
         return;
@@ -1870,8 +1983,10 @@ Pebble.addEventListener('showConfiguration', function() {
     EnableMemory: getBoolSetting('EnableMemory', true),
     EnableCalculator: getBoolSetting('EnableCalculator', true),
     EnableSearch: getBoolSetting('EnableSearch', false),
+    EnableScrape: getBoolSetting('EnableScrape', false),
     EnableWeather: getBoolSetting('EnableWeather', true),
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),
+    FirecrawlApiKey: getSetting('FirecrawlApiKey', ''),
     DebugLog: localStorage.getItem('DebugLog') || ''
   });
   Pebble.openURL(clay.generateUrl());

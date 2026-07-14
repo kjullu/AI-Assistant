@@ -22,6 +22,7 @@ This app sends your dictated prompts to OpenRouter (and from there to the select
 
 - `Location`: when enabled, your device location is included in the prompt and can be used for local weather.
 - `Brave Search`: when enabled, search queries are sent to Brave Search using your API key.
+- `Firecrawl Scrape`: when enabled, page URLs are sent to Firecrawl using your API key to fetch readable page content.
 - `Timeline`: when enabled, timeline pins are pushed through Pebble's timeline API.
 - `Calculator`: when enabled, lets the model call a calculator.
 - `Weather`: when enabled, lets the model look up weather forecasts for a place and time via Open-Meteo.

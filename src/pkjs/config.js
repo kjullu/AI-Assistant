@@ -54,6 +54,12 @@ module.exports = [
       },
       {
         "type": "toggle",
+        "messageKey": "EnableScrape",
+        "label": "Enable Firecrawl Scrape",
+        "defaultValue": false
+      },
+      {
+        "type": "toggle",
         "messageKey": "EnableCalculator",
         "label": "Enable Calculator",
         "defaultValue": true
@@ -70,6 +76,14 @@ module.exports = [
         "label": "Brave Search API Key (Necessary for search)",
         "attributes": {
           "placeholder": "Brave API key, looks like: cG5ArSu52223U6Yy23Ja" // The API key isn't real, don't worry
+        }
+      },
+      {
+        "type": "input",
+        "messageKey": "FirecrawlApiKey",
+        "label": "Firecrawl API Key (Necessary for scrape)",
+        "attributes": {
+          "placeholder": "Firecrawl API key, looks like: fc-..."
         }
       }
     ]

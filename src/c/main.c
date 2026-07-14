@@ -727,8 +727,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (status_tuple) {
     status = status_tuple->value->cstring;
     //AI: When a tool is running, reset the response flag so the real answer vibrates later.
-    if (strcmp(status, "Searching...") == 0 || strcmp(status, "Calculating...") == 0 ||
-        strcmp(status, "Getting weather...") == 0 || strcmp(status, "Getting location...") == 0) {
+    if (strcmp(status, "Searching...") == 0 || strcmp(status, "Scraping...") == 0 ||
+        strcmp(status, "Calculating...") == 0 || strcmp(status, "Getting weather...") == 0 ||
+        strcmp(status, "Getting location...") == 0) {
       s_response_started = false;
     }
   }
