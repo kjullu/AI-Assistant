@@ -10,6 +10,26 @@ var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 var TIMELINE_URL = 'https://timeline-api.getpebble.com/v1/user/pins/';
+
+var REGION_FALLBACKS = {
+  'central europe': { lat: 50.0, lon: 15.0 },
+  'northern europe': { lat: 62.0, lon: 10.0 },
+  'southern europe': { lat: 40.0, lon: 16.0 },
+  'western europe': { lat: 48.0, lon: 0.0 },
+  'eastern europe': { lat: 50.0, lon: 30.0 },
+  'central america': { lat: 13.0, lon: -85.0 },
+  'north america': { lat: 45.0, lon: -100.0 },
+  'south america': { lat: -15.0, lon: -60.0 },
+  'southeast asia': { lat: 5.0, lon: 110.0 },
+  'the middle east': { lat: 30.0, lon: 45.0 },
+  'middle east': { lat: 30.0, lon: 45.0 },
+  'northern africa': { lat: 25.0, lon: 10.0 },
+  'southern africa': { lat: -25.0, lon: 25.0 },
+  'eastern africa': { lat: 0.0, lon: 35.0 },
+  'western africa': { lat: 12.0, lon: -5.0 },
+  'the caribbean': { lat: 15.0, lon: -75.0 },
+  'caribbean': { lat: 15.0, lon: -75.0 }
+};
 var DEFAULT_MODEL = 'moonshotai/kimi-k2.5';
 var RESPONSE_CHUNK_CHARS = 600;
 var MAX_SEARCH_RESULTS = 3;
@@ -592,7 +612,7 @@ function buildSystemPrompt() {
     'Apply the provided current time, location context, search results, weather results, and notes/memory when relevant.',
     'Tool rules: request each tool at most once per turn. After you receive the result, answer and set that tool field back to null.',
     'Search tool: if current web info is needed and search is available, set search to a short query; otherwise keep it null.',
-    'Weather tool: if weather info is needed and weather is available, set weather to {"place":"city name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.',
+    'Weather tool: if weather info is needed and weather is available, set weather to {"place":"city or region name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. Accept named regions like states, countries, or broad areas such as "central Europe". The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.',
     'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
     'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Use short note strings, or {"add":["new note"],"replace":[{"index":0,"text":"updated note"}]} to edit. Do not duplicate existing memory or store temporary facts. Notes are your memory; add important things.',
     'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, set calc to either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}, then answer after the result is provided and set calc null.'
@@ -880,6 +900,66 @@ function formatWeatherResult(place, data, timeframe) {
   return lines.join('\n') + '\nWeather data unavailable.';
 }
 
+function resolvePlaceCoordinates(place, generation, callback) {
+  function fail(error) {
+    var fallback = REGION_FALLBACKS[place.toLowerCase()];
+    if (fallback) {
+      callback(null, fallback.lat, fallback.lon, place + ' (representative)');
+      return;
+    }
+    callback(error, null, null, null);
+  }
+
+  var geoRequest = new XMLHttpRequest();
+  trackRequest(geoRequest, generation);
+  geoRequest.open('GET', OPENMETEO_GEO_URL + '?name=' + encodeURIComponent(place) + '&count=1', true);
+  geoRequest.setRequestHeader('Accept', 'application/json');
+  geoRequest.timeout = 30000;
+
+  geoRequest.onload = function() {
+    untrackRequest(geoRequest);
+    if (!requestIsCurrent(geoRequest)) {
+      return;
+    }
+    if (geoRequest.status < 200 || geoRequest.status >= 300) {
+      fail('Geocoding failed (' + geoRequest.status + ').');
+      return;
+    }
+
+    try {
+      var geoJson = JSON.parse(geoRequest.responseText);
+      var results = geoJson.results || [];
+      if (results.length === 0) {
+        fail('Could not find place: ' + place);
+        return;
+      }
+      var result = results[0];
+      var resolvedPlace = result.name + (result.country ? ', ' + result.country : '');
+      callback(null, result.latitude, result.longitude, resolvedPlace);
+    } catch (err) {
+      fail('Bad geocoding response.');
+    }
+  };
+
+  geoRequest.onerror = function() {
+    untrackRequest(geoRequest);
+    if (!requestIsCurrent(geoRequest)) {
+      return;
+    }
+    fail('Geocoding network error.');
+  };
+
+  geoRequest.ontimeout = function() {
+    untrackRequest(geoRequest);
+    if (!requestIsCurrent(geoRequest)) {
+      return;
+    }
+    fail('Geocoding timed out.');
+  };
+
+  geoRequest.send();
+}
+
 function runWeatherTool(weather, generation, callback) {
   if (!weather) {
     callback(null, 'No weather request.');
@@ -949,58 +1029,18 @@ function runWeatherTool(weather, generation, callback) {
     request.send();
   }
 
-  if (place) {
-    var geoRequest = new XMLHttpRequest();
-    trackRequest(geoRequest, generation);
-    geoRequest.open('GET', OPENMETEO_GEO_URL + '?name=' + encodeURIComponent(place) + '&count=1', true);
-    geoRequest.setRequestHeader('Accept', 'application/json');
-    geoRequest.timeout = 30000;
-
-    geoRequest.onload = function() {
-      untrackRequest(geoRequest);
-      if (!requestIsCurrent(geoRequest)) {
-        return;
-      }
-      if (geoRequest.status < 200 || geoRequest.status >= 300) {
-        callback(null, 'Geocoding failed (' + geoRequest.status + ').');
-        return;
-      }
-
-      try {
-        var geoJson = JSON.parse(geoRequest.responseText);
-        var results = geoJson.results || [];
-        if (results.length === 0) {
-          callback(null, 'Could not find place: ' + place);
-          return;
-        }
-        var result = results[0];
-        var resolvedPlace = result.name + (result.country ? ', ' + result.country : '');
-        doFetch(result.latitude, result.longitude, resolvedPlace);
-      } catch (err) {
-        callback(null, 'Bad geocoding response.');
-      }
-    };
-
-    geoRequest.onerror = function() {
-      untrackRequest(geoRequest);
-      if (!requestIsCurrent(geoRequest)) {
-        return;
-      }
-      callback(null, 'Geocoding network error.');
-    };
-
-    geoRequest.ontimeout = function() {
-      untrackRequest(geoRequest);
-      if (!requestIsCurrent(geoRequest)) {
-        return;
-      }
-      callback(null, 'Geocoding timed out.');
-    };
-
-    geoRequest.send();
-  } else {
+  if (!place) {
     callback(null, 'No place provided for weather lookup.');
+    return;
   }
+
+  resolvePlaceCoordinates(place, generation, function(error, lat, lon, resolvedPlace) {
+    if (error) {
+      callback(null, error);
+      return;
+    }
+    doFetch(lat, lon, resolvedPlace);
+  });
 }
 
 function extractReplyFromPartialJson(content) {
