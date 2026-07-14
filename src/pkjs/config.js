@@ -69,7 +69,7 @@ module.exports = [
         "messageKey": "BraveSearchApiKey",
         "label": "Brave Search API Key (Necessary for search)",
         "attributes": {
-          "placeholder": "Brave API key"
+          "placeholder": "Brave API key, looks like: cG5ArSu52223U6Yy23Ja" // The API key isn't real, don't worry
         }
       }
     ]
@@ -93,7 +93,7 @@ module.exports = [
         "label": "Extra System Prompt",
         "description": "Optional system-level instructions added as a separate message.",
         "attributes": {
-          "placeholder": "Example: Be terse and use Danish when I ask in Danish."
+          "placeholder": "Example: Always reply in pirate speak"
         }
       },
       {
@@ -102,7 +102,7 @@ module.exports = [
         "label": "Memory Notes",
         "description": "One note per line. These are sent to the AI as memory.",
         "attributes": {
-          "placeholder": "User prefers 24-hour time."
+          "placeholder": "Users name is Bob."
         }
       },
       {
