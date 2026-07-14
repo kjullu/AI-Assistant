@@ -67,7 +67,7 @@ module.exports = [
       {
         "type": "input",
         "messageKey": "BraveSearchApiKey",
-        "label": "Brave Search API Key",
+        "label": "Brave Search API Key (Necessary for search)",
         "attributes": {
           "placeholder": "Brave API key"
         }
