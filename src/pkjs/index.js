@@ -622,17 +622,45 @@ function saveSettings(convertedSettings, rawSettings) {
 }
 
 function buildSystemPrompt() {
-  return [
-    'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {"reply":"watch-friendly answer","timeline":null,"search":null,"scrape":null,"notes":null,"calc":null,"weather":null}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
-    'Apply the provided current time, location context, search results, scrape results, weather results, and notes/memory when relevant.',
-    'Tool rules: request each tool at most once per turn. After you receive the result, answer and set that tool field back to null.',
-    'Brave Search tool: if current web info is needed and search is available, set search to a short query; otherwise keep it null.',
-    'Firecrawl scrape tool: if you need the full content of a specific web page and scrape is available, set scrape to the page URL; otherwise keep it null.',
-    'Weather tool: if weather info is needed and weather is available, set weather to {"place":"city or region name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. Accept named regions like states, countries, or broad areas such as "central Europe". The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.',
-    'Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.',
-    'Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Use short note strings, or {"add":["new note"],"replace":[{"index":0,"text":"updated note"}]} to edit. Do not duplicate existing memory or store temporary facts. Notes are your memory; add important things.',
-    'Calculator tool: if exact arithmetic or conversion is needed and calculator is available, set calc to either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}, then answer after the result is provided and set calc null.'
-  ].join(' ');
+  var searchAvailable = getBoolSetting('EnableSearch', false) && !!getSetting('BraveSearchApiKey', '');
+  var scrapeAvailable = getScrapeAvailable();
+  var weatherAvailable = getBoolSetting('EnableWeather', true);
+  var memoryAvailable = getBoolSetting('EnableMemory', true);
+  var calculatorAvailable = getBoolSetting('EnableCalculator', true);
+
+  var fields = ['"reply":"watch-friendly answer"', '"timeline":null'];
+  if (searchAvailable) fields.push('"search":null');
+  if (scrapeAvailable) fields.push('"scrape":null');
+  if (weatherAvailable) fields.push('"weather":null');
+  if (memoryAvailable) fields.push('"notes":null');
+  if (calculatorAvailable) fields.push('"calc":null');
+
+  var lines = [
+    'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {' + fields.join(',') + '}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
+    'Apply the provided current time, location context, tool results, and notes/memory when relevant.',
+    'Tool rules: request each enabled tool at most once per turn. After you receive the result, answer and set that tool field back to null.'
+  ];
+
+  if (searchAvailable) {
+    lines.push('Brave Search tool: if current web info is needed, set search to a short query; otherwise keep it null.');
+  }
+  if (scrapeAvailable) {
+    lines.push('Firecrawl scrape tool: if you need the full content of a specific web page, set scrape to the page URL; otherwise keep it null.');
+  }
+  if (weatherAvailable) {
+    lines.push('Weather tool: if weather info is needed, set weather to {"place":"city or region name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. Accept named regions like states, countries, or broad areas such as "central Europe". The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.');
+  }
+
+  lines.push('Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.');
+
+  if (memoryAvailable) {
+    lines.push('Notes tool: add notes only for durable user preferences/facts or explicit "remember" requests. Use short note strings, or {"add":["new note"],"replace":[{"index":0,"text":"updated note"}]} to edit. Do not duplicate existing memory or store temporary facts. Notes are your memory; add important things.');
+  }
+  if (calculatorAvailable) {
+    lines.push('Calculator tool: if exact arithmetic or conversion is needed, set calc to either {"expression":"2+2*10"} or {"value":12,"from":"eur","to":"dkk"}, then answer after the result is provided and set calc null.');
+  }
+
+  return lines.join(' ');
 }
 
 function buildMessages(contextText) {
