@@ -547,6 +547,8 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
 }
 
 static void choice_layer_update_proc(Layer *layer, GContext *ctx) {
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
   layout_choice_text(ctx, layer_get_bounds(layer), true);
 }
 
@@ -952,7 +954,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
                               strcmp(status, "Memory on") == 0 || strcmp(status, "Memory off") == 0 ||
                               strcmp(status, "Calculator on") == 0 || strcmp(status, "Calculator off") == 0 ||
                               strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0 ||
-                              strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0)) {
+                              strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0 ||
+                              strcmp(status, "Choice on") == 0 || strcmp(status, "Choice off") == 0)) {
     vibes_short_pulse();
     status = "Ready";
   }
