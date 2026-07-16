@@ -627,6 +627,7 @@ function buildSystemPrompt() {
   var weatherAvailable = getBoolSetting('EnableWeather', true);
   var memoryAvailable = getBoolSetting('EnableMemory', true);
   var calculatorAvailable = getBoolSetting('EnableCalculator', true);
+  var locationAvailable = getBoolSetting('EnableLocation', false);
 
   var fields = ['"reply":"watch-friendly answer"', '"timeline":null'];
   if (searchAvailable) fields.push('"search":null');
@@ -634,10 +635,11 @@ function buildSystemPrompt() {
   if (weatherAvailable) fields.push('"weather":null');
   if (memoryAvailable) fields.push('"notes":null');
   if (calculatorAvailable) fields.push('"calc":null');
+  if (locationAvailable) fields.push('"location":null');
 
   var lines = [
     'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {' + fields.join(',') + '}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
-    'Apply the provided current time, location context, tool results, and notes/memory when relevant.',
+    'Apply the provided current time, tool results, and notes/memory when relevant.',
     'Tool rules: request each enabled tool at most once per turn. After you receive the result, answer and set that tool field back to null.'
   ];
 
@@ -649,6 +651,9 @@ function buildSystemPrompt() {
   }
   if (weatherAvailable) {
     lines.push('Weather tool: if weather info is needed, set weather to {"place":"city or region name","timeframe":"now|today|tomorrow|+<hours>h|+<days>d"}. Accept named regions like states, countries, or broad areas such as "central Europe". The place must always be provided by you; never infer it from user location. If they did not name a place, ask them to and keep weather null.');
+  }
+  if (locationAvailable) {
+    lines.push('Location tool: if the user asks about their location, nearby places, or asks "where am I", set location to true to receive coordinates and approximate place name; otherwise keep it null.');
   }
 
   lines.push('Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.');
@@ -703,7 +708,8 @@ function parseAssistantContent(content) {
       scrape: parsed.scrape || null,
       notes: parsed.notes || null,
       calc: parsed.calc || null,
-      weather: parsed.weather || null
+      weather: parsed.weather || null,
+      location: parsed.location || null
     };
   } catch (err) {
     return {
@@ -713,7 +719,8 @@ function parseAssistantContent(content) {
       scrape: null,
       notes: null,
       calc: null,
-      weather: null
+      weather: null,
+      location: null
     };
   }
 }
@@ -1237,14 +1244,14 @@ function reverseGeocode(lat, lon, generation, callback) {
   request.send();
 }
 
-function getLocationContext(generation, callback) {
+function runLocationTool(generation, callback) {
   if (!getBoolSetting('EnableLocation', false)) {
-    callback('Location access disabled.');
+    callback(null, 'Location access disabled.');
     return;
   }
 
   if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
-    callback('Location unavailable on this phone.');
+    callback(null, 'Location unavailable on this phone.');
     return;
   }
 
@@ -1260,17 +1267,17 @@ function getLocationContext(generation, callback) {
       if (generation !== requestGeneration) {
         return;
       }
-      var context = 'User location: latitude ' + lat + ', longitude ' + lon + ', accuracy about ' + accuracy + ' meters.';
+      var context = 'Current location: latitude ' + lat + ', longitude ' + lon + ', accuracy about ' + accuracy + ' meters.';
       if (placeName) {
         context += ' Approximate place: ' + placeName + '.';
       }
-      callback(context);
+      callback(context, null);
     });
   }, function(err) {
     if (generation !== requestGeneration) {
       return;
     }
-    callback('Location requested but unavailable: ' + err.message + '.');
+    callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
   }, {
     enableHighAccuracy: false,
     maximumAge: 10 * 60 * 1000,
@@ -1493,11 +1500,11 @@ function callModelStream(messages, generation, callback) {
 
     var parsed = parseAssistantContent(fullContent);
     var finalReply = parsed.reply || extractReplyFromPartialJson(fullContent);
-    if (!finalReply && !parsed.search && !parsed.scrape && !parsed.calc && !parsed.weather) {
+    if (!finalReply && !parsed.search && !parsed.scrape && !parsed.calc && !parsed.weather && !parsed.location) {
       finalReply = 'No response.';
     }
     debugLog('stream final replyLen=' + String(finalReply || '').length + ' search=' + !!parsed.search + ' scrape=' + !!parsed.scrape + ' notes=' + !!parsed.notes + ' prefix=' + clip(finalReply, 180));
-    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.scrape && !parsed.calc && !parsed.weather)) {
+    if (!fullContent || (finalReply === 'No response.' && !parsed.search && !parsed.scrape && !parsed.calc && !parsed.weather && !parsed.location)) {
       startNonStreamingFallback('empty-final');
       return;
     }
@@ -1734,94 +1741,111 @@ function callOpenRouter(prompt) {
   incrementStat('messages');
   sendStatsToWatch();
   sendToWatch({ Status: 'Thinking...' });
-  getLocationContext(generation, function(locationContext) {
-    var searchAvailable = getBoolSetting('EnableSearch', false) && !!getSetting('BraveSearchApiKey', '');
-    var scrapeAvailable = getScrapeAvailable();
-    var weatherAvailable = getBoolSetting('EnableWeather', true);
-    debugLog('context ready searchAvailable=' + searchAvailable + ' scrapeAvailable=' + scrapeAvailable + ' weatherAvailable=' + weatherAvailable + ' locationContext=' + clip(locationContext, 120));
-    var contextText = locationContext +
-      '\nSearch available: ' + (searchAvailable ? 'yes, request Brave Search with the search field when needed.' : 'no.') +
-      '\nScrape available: ' + (scrapeAvailable ? 'yes, request Firecrawl scrape with the scrape field when needed.' : 'no.') +
-      '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
 
-    var baseMessages = buildMessages(contextText);
-    var userMessage = { role: 'user', content: prompt };
-    var firstMessages = baseMessages.concat([userMessage]);
+  var searchAvailable = getBoolSetting('EnableSearch', false) && !!getSetting('BraveSearchApiKey', '');
+  var scrapeAvailable = getScrapeAvailable();
+  var weatherAvailable = getBoolSetting('EnableWeather', true);
+  debugLog('context ready searchAvailable=' + searchAvailable + ' scrapeAvailable=' + scrapeAvailable + ' weatherAvailable=' + weatherAvailable);
+  var contextText =
+    'Search available: ' + (searchAvailable ? 'yes, request Brave Search with the search field when needed.' : 'no.') +
+    '\nScrape available: ' + (scrapeAvailable ? 'yes, request Firecrawl scrape with the scrape field when needed.' : 'no.') +
+    '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
 
-    callModelStream(firstMessages, generation, function(parsed, alreadySent) {
-      if (parsed.search) {
-        var searchRequest = { role: 'assistant', content: JSON.stringify({ search: parsed.search }) };
-        braveSearch(String(parsed.search), generation, function(searchResultsText, searchError) {
-          if (searchError) {
-            showError(searchError, 'Search query: ' + parsed.search);
-            return;
-          }
-          sendToWatch({ Status: 'Thinking...' });
-          var searchResultEntry = { role: 'tool', content: searchResultsText };
-          var secondMessages = baseMessages.concat([userMessage, searchRequest, searchResultEntry]);
-          callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, [searchRequest, searchResultEntry], finalParsed, finalAlreadySent);
-          });
-        });
-        return;
-      }
+  var baseMessages = buildMessages(contextText);
+  var userMessage = { role: 'user', content: prompt };
+  var firstMessages = baseMessages.concat([userMessage]);
 
-      if (parsed.scrape) {
-        var scrapeRequest = { role: 'assistant', content: JSON.stringify({ scrape: parsed.scrape }) };
-        firecrawlScrape(String(parsed.scrape), generation, function(scrapeResultsText, scrapeError) {
-          if (scrapeError) {
-            showError(scrapeError, 'Scrape URL: ' + parsed.scrape);
-            return;
-          }
-          sendToWatch({ Status: 'Thinking...' });
-          var scrapeResultEntry = { role: 'tool', content: scrapeResultsText };
-          var scrapeMessages = baseMessages.concat([userMessage, scrapeRequest, scrapeResultEntry]);
-          callModelStream(scrapeMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, [scrapeRequest, scrapeResultEntry], finalParsed, finalAlreadySent);
-          });
-        });
-        return;
-      }
-
-      if (parsed.weather) {
-        var weatherRequest = { role: 'assistant', content: JSON.stringify({ weather: parsed.weather }) };
-        runWeatherTool(parsed.weather, generation, function(weatherResultsText, weatherError) {
-          if (weatherError) {
-            showError(weatherError, 'Weather request: ' + JSON.stringify(parsed.weather));
-            return;
-          }
-          sendToWatch({ Status: 'Thinking...' });
-          var weatherResultEntry = { role: 'tool', content: weatherResultsText };
-          var weatherMessages = baseMessages.concat([userMessage, weatherRequest, weatherResultEntry]);
-          callModelStream(weatherMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, [weatherRequest, weatherResultEntry], finalParsed, finalAlreadySent);
-          });
-        });
-        return;
-      }
-
-      if (parsed.calc) {
-        if (!getBoolSetting('EnableCalculator', true)) {
-          showError('Calculator disabled.', 'Model requested calculator tool while disabled');
+  callModelStream(firstMessages, generation, function(parsed, alreadySent) {
+    if (parsed.search) {
+      var searchRequest = { role: 'assistant', content: JSON.stringify({ search: parsed.search }) };
+      braveSearch(String(parsed.search), generation, function(searchResultsText, searchError) {
+        if (searchError) {
+          showError(searchError, 'Search query: ' + parsed.search);
           return;
         }
-        try {
-          var calculatorResultsText = runCalculatorTool(parsed.calc);
-          debugLog('calculator tool result=' + calculatorResultsText);
-          var calcRequest = { role: 'assistant', content: JSON.stringify({ calc: parsed.calc }) };
-          var calcResultEntry = { role: 'tool', content: calculatorResultsText };
-          sendToWatch({ Status: 'Calculating...' });
-          var calculatorMessages = baseMessages.concat([userMessage, calcRequest, calcResultEntry]);
-          callModelStream(calculatorMessages, generation, function(finalParsed, finalAlreadySent) {
-            finishAssistantTurn(prompt, [calcRequest, calcResultEntry], finalParsed, finalAlreadySent);
-          });
-        } catch (err) {
-          showError('Calculator failed.', err.message);
+        sendToWatch({ Status: 'Thinking...' });
+        var searchResultEntry = { role: 'tool', content: searchResultsText };
+        var secondMessages = baseMessages.concat([userMessage, searchRequest, searchResultEntry]);
+        callModelStream(secondMessages, generation, function(finalParsed, finalAlreadySent) {
+          finishAssistantTurn(prompt, [searchRequest, searchResultEntry], finalParsed, finalAlreadySent);
+        });
+      });
+      return;
+    }
+
+    if (parsed.scrape) {
+      var scrapeRequest = { role: 'assistant', content: JSON.stringify({ scrape: parsed.scrape }) };
+      firecrawlScrape(String(parsed.scrape), generation, function(scrapeResultsText, scrapeError) {
+        if (scrapeError) {
+          showError(scrapeError, 'Scrape URL: ' + parsed.scrape);
+          return;
         }
+        sendToWatch({ Status: 'Thinking...' });
+        var scrapeResultEntry = { role: 'tool', content: scrapeResultsText };
+        var scrapeMessages = baseMessages.concat([userMessage, scrapeRequest, scrapeResultEntry]);
+        callModelStream(scrapeMessages, generation, function(finalParsed, finalAlreadySent) {
+          finishAssistantTurn(prompt, [scrapeRequest, scrapeResultEntry], finalParsed, finalAlreadySent);
+        });
+      });
+      return;
+    }
+
+    if (parsed.weather) {
+      var weatherRequest = { role: 'assistant', content: JSON.stringify({ weather: parsed.weather }) };
+      runWeatherTool(parsed.weather, generation, function(weatherResultsText, weatherError) {
+        if (weatherError) {
+          showError(weatherError, 'Weather request: ' + JSON.stringify(parsed.weather));
+          return;
+        }
+        sendToWatch({ Status: 'Thinking...' });
+        var weatherResultEntry = { role: 'tool', content: weatherResultsText };
+        var weatherMessages = baseMessages.concat([userMessage, weatherRequest, weatherResultEntry]);
+        callModelStream(weatherMessages, generation, function(finalParsed, finalAlreadySent) {
+          finishAssistantTurn(prompt, [weatherRequest, weatherResultEntry], finalParsed, finalAlreadySent);
+        });
+      });
+      return;
+    }
+
+    if (parsed.location) {
+      var locationRequest = { role: 'assistant', content: JSON.stringify({ location: true }) };
+      runLocationTool(generation, function(locationResultsText, locationError) {
+        var locationResultEntry;
+        if (locationError) {
+          locationResultEntry = { role: 'tool', content: 'Location result: ' + locationError };
+        } else {
+          locationResultEntry = { role: 'tool', content: locationResultsText };
+        }
+        sendToWatch({ Status: 'Thinking...' });
+        var locationMessages = baseMessages.concat([userMessage, locationRequest, locationResultEntry]);
+        callModelStream(locationMessages, generation, function(finalParsed, finalAlreadySent) {
+          finishAssistantTurn(prompt, [locationRequest, locationResultEntry], finalParsed, finalAlreadySent);
+        });
+      });
+      return;
+    }
+
+    if (parsed.calc) {
+      if (!getBoolSetting('EnableCalculator', true)) {
+        showError('Calculator disabled.', 'Model requested calculator tool while disabled');
         return;
       }
-      finishAssistantTurn(prompt, [], parsed, alreadySent);
-    });
+      try {
+        var calculatorResultsText = runCalculatorTool(parsed.calc);
+        debugLog('calculator tool result=' + calculatorResultsText);
+        var calcRequest = { role: 'assistant', content: JSON.stringify({ calc: parsed.calc }) };
+        var calcResultEntry = { role: 'tool', content: calculatorResultsText };
+        sendToWatch({ Status: 'Calculating...' });
+        var calculatorMessages = baseMessages.concat([userMessage, calcRequest, calcResultEntry]);
+        callModelStream(calculatorMessages, generation, function(finalParsed, finalAlreadySent) {
+          finishAssistantTurn(prompt, [calcRequest, calcResultEntry], finalParsed, finalAlreadySent);
+        });
+      } catch (err) {
+        showError('Calculator failed.', err.message);
+      }
+      return;
+    }
+    finishAssistantTurn(prompt, [], parsed, alreadySent);
   });
 }
 
