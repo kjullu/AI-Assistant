@@ -3,6 +3,8 @@
 - Add Firecrawl scrape tool for fetching page content as a tool result.
 - Weather tool can now accept location instead of just city.
 - Only include tool explanations and JSON fields in the system prompt when the tool is enabled.
+- Convert location from system prompt to an actual tool that the model can request.
+- Make location lookup fail gracefully by returning an error message to the model instead of halting.
 
 # Changelog 0.2.0
 
