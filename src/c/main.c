@@ -70,6 +70,7 @@ static bool s_memory_enabled = true;
 static bool s_calculator_enabled = true;
 static bool s_search_enabled;
 static bool s_weather_enabled = true;
+static bool s_choice_enabled = true;
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 static AppTimer *s_touch_long_timer;
 static bool s_touch_long_fired;
@@ -77,6 +78,18 @@ static bool s_touch_moved;
 static int16_t s_touch_start_y;
 static int16_t s_touch_last_y;
 #endif
+
+// Choice/menu screen state
+#define MAX_CHOICE_OPTIONS 8
+#define MAX_CHOICE_TEXT 256
+static bool s_show_choice;
+static char s_choice_question[MAX_CHOICE_TEXT];
+static char s_choice_options[MAX_CHOICE_OPTIONS][MAX_CHOICE_TEXT];
+static int s_choice_option_count;
+static int s_choice_selection;
+static char s_choice_answer_buffer[MAX_CHOICE_TEXT + 8];
+static bool s_choice_waiting_dictation;
+static Layer *s_choice_layer;
 
 static void update_display(const char *status);
 static void clear_watch_session(void);
@@ -289,7 +302,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 5;
+  return 6;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -310,9 +323,13 @@ static void get_settings_row(int8_t index, SettingRow *out) {
       out->label = "Search";
       out->enabled = s_search_enabled;
       break;
-    default:
+    case 4:
       out->label = "Weather";
       out->enabled = s_weather_enabled;
+      break;
+    default:
+      out->label = "Choice";
+      out->enabled = s_choice_enabled;
       break;
   }
 }
@@ -385,6 +402,152 @@ static void open_sessions_screen(void) {
   s_show_home = false;
   update_display("Ready");
   send_simple_command(MESSAGE_KEY_OpenSessions, "Sessions unavailable");
+}
+
+static void close_choice_screen(void) {
+  s_show_choice = false;
+  s_choice_waiting_dictation = false;
+  s_choice_question[0] = '\0';
+  s_choice_option_count = 0;
+  s_choice_selection = 0;
+  layer_set_hidden(s_choice_layer, true);
+  update_display("Ready");
+}
+
+static void send_choice_answer(void) {
+  DictionaryIterator *iter;
+  AppMessageResult result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK || !iter) {
+    update_display("Choice send failed");
+    vibes_double_pulse();
+    return;
+  }
+
+  if (s_choice_selection >= 0 && s_choice_selection < s_choice_option_count) {
+    snprintf(s_choice_answer_buffer, sizeof(s_choice_answer_buffer), "%s", s_choice_options[s_choice_selection]);
+    dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, s_choice_answer_buffer);
+  } else {
+    dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, "");
+  }
+  dict_write_end(iter);
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    update_display("Choice send failed");
+    vibes_double_pulse();
+    return;
+  }
+  close_choice_screen();
+  s_show_home = false;
+  update_display("Sending...");
+}
+
+static void open_choice_screen(const char *question, const char *options_text) {
+  s_show_choice = true;
+  s_choice_question[0] = '\0';
+  s_choice_option_count = 0;
+  s_choice_selection = 0;
+
+  if (question) {
+    snprintf(s_choice_question, sizeof(s_choice_question), "%s", question);
+  }
+
+  if (options_text) {
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s", options_text);
+    char *line = buf;
+    while (line && *line && s_choice_option_count < MAX_CHOICE_OPTIONS) {
+      char *next = strchr(line, '\n');
+      if (next) {
+        *next = '\0';
+      }
+      while (*line == ' ' || *line == '\t') {
+        line++;
+      }
+      if (*line != '\0') {
+        snprintf(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, "%s", line);
+        s_choice_option_count++;
+      }
+      if (next) {
+        *next = '\n';
+        line = next + 1;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Always add a "Say your own" option at the end
+  if (s_choice_option_count < MAX_CHOICE_OPTIONS) {
+    snprintf(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, "Say your own");
+    s_choice_option_count++;
+  }
+
+  layer_set_hidden(s_choice_layer, false);
+  layer_mark_dirty(s_choice_layer);
+  update_display("Choose");
+}
+
+static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
+  GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  int16_t width = bounds.size.w;
+  int16_t y = PADDING;
+
+  // Question header background
+  int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question", question_font, width - (PADDING * 2));
+  if (question_h < 20) {
+    question_h = 20;
+  }
+  if (draw) {
+    graphics_context_set_fill_color(ctx, ACCENT_AI);
+    graphics_fill_rect(ctx, GRect(0, y, width, question_h + PADDING * 2), 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, s_choice_question[0] ? s_choice_question : "Question", question_font,
+                       GRect(PADDING, y + PADDING, width - (PADDING * 2), question_h + PADDING),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  y += question_h + PADDING * 2;
+  if (draw) {
+    draw_divider(ctx, PADDING, y, width - (PADDING * 2), COLOR_DIM, true);
+  }
+  y += DIVIDER_GAP;
+
+  // Options
+  for (int i = 0; i < s_choice_option_count; i++) {
+    bool selected = (i == s_choice_selection);
+    int16_t opt_h = measure_text_height(s_choice_options[i], option_font, width - (PADDING * 4));
+    if (opt_h < ROW_HEIGHT) {
+      opt_h = ROW_HEIGHT;
+    }
+
+    if (draw) {
+      if (selected) {
+        graphics_context_set_fill_color(ctx, ACCENT_SELECT);
+        graphics_fill_rect(ctx, GRect(0, y, width, opt_h), 0, GCornerNone);
+      }
+      GColor text_color = selected ? GColorWhite : GColorBlack;
+      graphics_context_set_text_color(ctx, text_color);
+      graphics_draw_text(ctx, s_choice_options[i], option_font,
+                         GRect(PADDING * 2, y + 4, width - (PADDING * 4), opt_h),
+                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    }
+    y += opt_h;
+  }
+
+  if (draw) {
+    graphics_context_set_text_color(ctx, COLOR_DIM);
+    graphics_draw_text(ctx, "SELECT pick  UP/DN move  BACK", hint_font,
+                       GRect(PADDING, y + PADDING, width - (PADDING * 2), 20),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  y += 20 + PADDING * 2;
+
+  return y;
+}
+
+static void choice_layer_update_proc(Layer *layer, GContext *ctx) {
+  layout_choice_text(ctx, layer_get_bounds(layer), true);
 }
 
 static void send_simple_command(uint32_t key, const char *failure_status) {
@@ -582,6 +745,7 @@ static void layout_chat(bool scroll_to_bottom) {
   layer_set_hidden(s_history_layer, s_show_settings || s_show_sessions || s_show_home || !has_history);
   layer_set_hidden(s_settings_layer, !s_show_settings);
   layer_set_hidden(s_sessions_layer, !s_show_sessions);
+  layer_set_hidden(s_choice_layer, !s_show_choice);
   layer_set_hidden(text_layer_get_layer(s_prompt_label_layer), true);
   layer_set_hidden(text_layer_get_layer(s_prompt_layer), true);
   layer_set_hidden(text_layer_get_layer(s_assistant_label_layer), true);
@@ -805,6 +969,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_calculator_enabled = strstr(states, "calculator=1") != NULL;
     s_search_enabled = strstr(states, "search=1") != NULL;
     s_weather_enabled = strstr(states, "weather=1") != NULL;
+    s_choice_enabled = strstr(states, "choice=1") != NULL;
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -820,6 +985,21 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     }
   }
 
+  {
+    Tuple *choice_question_tuple = dict_find(iter, MESSAGE_KEY_ChoiceQuestion);
+    Tuple *choice_options_tuple = dict_find(iter, MESSAGE_KEY_ChoiceOptions);
+    if (choice_question_tuple && choice_options_tuple) {
+      open_choice_screen(choice_question_tuple->value->cstring, choice_options_tuple->value->cstring);
+    }
+  }
+
+  {
+    Tuple *choice_cancel_tuple = dict_find(iter, MESSAGE_KEY_ChoiceCancel);
+    if (choice_cancel_tuple) {
+      close_choice_screen();
+    }
+  }
+
   //USR: Update text/display with new info
   //AI: Rebuild and redraw the watch text view using the latest status and response.
   update_display(status);
@@ -830,6 +1010,24 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 //AI: If speech recognition succeeded, send the transcription to the phone; otherwise show "Dictation cancelled".
 static void dictation_callback(DictationSession *session, DictationSessionStatus status,
                                char *transcription, void *context) {
+  if (s_choice_waiting_dictation) {
+    s_choice_waiting_dictation = false;
+    if (status == DictationSessionStatusSuccess) {
+      DictionaryIterator *iter;
+      AppMessageResult result = app_message_outbox_begin(&iter);
+      if (result == APP_MSG_OK && iter) {
+        dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcription);
+        dict_write_end(iter);
+        app_message_outbox_send();
+      }
+      close_choice_screen();
+      s_show_home = false;
+      update_display("Sending...");
+    }
+    // On cancel, leave the choice screen open so user can try again/back
+    return;
+  }
+
   if (status == DictationSessionStatusSuccess) {
     // Forward the recognized speech to the phone-side JS for AI processing.
     send_prompt(transcription);
@@ -841,6 +1039,18 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
 
 // SELECT is the only app-specific button action; UP/DOWN are kept for scrolling.
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    if (s_choice_selection >= 0 && s_choice_selection < s_choice_option_count) {
+      if (strcmp(s_choice_options[s_choice_selection], "Say your own") == 0) {
+        s_choice_waiting_dictation = true;
+        dictation_session_start(s_dictation_session);
+      } else {
+        send_choice_answer();
+      }
+    }
+    return;
+  }
+
   if (s_show_settings) {
     toggle_selected_setting();
     return;
@@ -851,12 +1061,27 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    return;
+  }
   clear_watch_session();
 
   send_simple_command(MESSAGE_KEY_ClearSession, "Cleared watch only");
 }
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    DictionaryIterator *iter;
+    AppMessageResult result = app_message_outbox_begin(&iter);
+    if (result == APP_MSG_OK && iter) {
+      dict_write_uint8(iter, MESSAGE_KEY_ChoiceCancel, 1);
+      dict_write_end(iter);
+      app_message_outbox_send();
+    }
+    close_choice_screen();
+    return;
+  }
+
   if (s_show_settings) {
     s_show_settings = false;
     s_show_home = s_settings_return_home;
@@ -888,16 +1113,28 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void up_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    return;
+  }
   open_settings_screen();
 }
 
 static void down_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    return;
+  }
   open_sessions_screen();
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    s_choice_selection = (s_choice_selection + s_choice_option_count - 1) % s_choice_option_count;
+    layer_mark_dirty(s_choice_layer);
+    return;
+  }
+
   if (s_show_settings) {
-    s_settings_selection = (s_settings_selection + 4) % 5;
+    s_settings_selection = (s_settings_selection + 5) % 6;
     update_display("Ready");
   } else if (s_show_home) {
     open_settings_screen();
@@ -908,8 +1145,14 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_choice) {
+    s_choice_selection = (s_choice_selection + 1) % s_choice_option_count;
+    layer_mark_dirty(s_choice_layer);
+    return;
+  }
+
   if (s_show_settings) {
-    s_settings_selection = (s_settings_selection + 1) % 5;
+    s_settings_selection = (s_settings_selection + 1) % 6;
     update_display("Ready");
   } else if (s_show_home) {
     open_sessions_screen();
@@ -935,6 +1178,9 @@ static void toggle_selected_setting(void) {
       break;
     case 4:
       send_simple_command(MESSAGE_KEY_ToggleWeather, "Toggle failed");
+      break;
+    case 5:
+      send_simple_command(MESSAGE_KEY_ToggleChoice, "Toggle failed");
       break;
   }
 }
@@ -1098,6 +1344,11 @@ static void window_load(Window *window) {
   layer_set_update_proc(s_sessions_layer, sessions_layer_update_proc);
   scroll_layer_add_child(s_scroll_layer, s_sessions_layer);
 
+  s_choice_layer = layer_create(GRect(0, STATUS_BAR_LAYER_HEIGHT, bounds.size.w, bounds.size.h - STATUS_BAR_LAYER_HEIGHT));
+  layer_set_update_proc(s_choice_layer, choice_layer_update_proc);
+  layer_add_child(window_layer, s_choice_layer);
+  layer_set_hidden(s_choice_layer, true);
+
   //AI: This must be added after the scroll layer so the down indicator appears on top.
   layer_add_child(window_layer, s_scroll_indicator_down);
 
@@ -1139,6 +1390,7 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_status_message_layer);
   layer_destroy(s_settings_layer);
   layer_destroy(s_sessions_layer);
+  layer_destroy(s_choice_layer);
   status_bar_layer_destroy(s_status_layer);
   layer_destroy(s_scroll_indicator_down);
   scroll_layer_destroy(s_scroll_layer);
