@@ -71,11 +71,17 @@ module.exports = [
         "defaultValue": true
       },
       {
+        "type": "toggle",
+        "messageKey": "EnableChoice",
+        "label": "Enable Choice Prompts",
+        "defaultValue": true
+      },
+      {
         "type": "input",
         "messageKey": "BraveSearchApiKey",
         "label": "Brave Search API Key (Necessary for search)",
         "attributes": {
-          "placeholder": "Brave API key, looks like: cG5ArSu52223U6Yy23Ja" // The API key isn't real, don't worry
+          "placeholder": "Brave API key, looks like: cG5Ar..."
         }
       },
       {

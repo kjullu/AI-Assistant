@@ -36,6 +36,7 @@
       "ToggleCalculator",
       "ToggleSearch",
       "ToggleWeather",
+      "ToggleChoice",
       "RefreshStats",
       "ToolStates",
       "OpenSessions",
@@ -52,6 +53,7 @@
       "EnableCalculator",
       "EnableSearch",
       "EnableWeather",
+      "EnableChoice",
       "EnableScrape",
       "BraveSearchApiKey",
       "FirecrawlApiKey",
@@ -60,7 +62,11 @@
       "StatsUsedCredits",
       "StatsMessages",
       "StatsSearches",
-      "DebugLog"
+      "DebugLog",
+      "ChoiceQuestion",
+      "ChoiceOptions",
+      "ChoiceAnswer",
+      "ChoiceCancel"
     ],
     "resources": {
       "media": []
