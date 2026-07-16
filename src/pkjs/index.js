@@ -45,6 +45,9 @@ var sendQueue = [];
 var sending = false;
 var activeRequests = [];
 var requestGeneration = 0;
+var pendingChoiceGeneration = 0;
+var pendingChoicePrompt = null;
+var pendingChoiceMessages = null;
 
 function debugLog(message) {
   var line = new Date().toISOString() + ' ' + message;
@@ -272,7 +275,8 @@ function sendToolStatesToWatch() {
       ';calculator=' + (getBoolSetting('EnableCalculator', true) ? '1' : '0') +
       ';search=' + (getBoolSetting('EnableSearch', false) ? '1' : '0') +
       ';scrape=' + (getScrapeAvailable() ? '1' : '0') +
-      ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0')
+      ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0') +
+      ';choice=' + (getBoolSetting('EnableChoice', true) ? '1' : '0')
   });
 }
 
@@ -570,6 +574,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableSearch = settingValue(convertedSettings, rawSettings, 'EnableSearch', messageKeys.EnableSearch);
   var enableWeather = settingValue(convertedSettings, rawSettings, 'EnableWeather', messageKeys.EnableWeather);
   var enableScrape = settingValue(convertedSettings, rawSettings, 'EnableScrape', messageKeys.EnableScrape);
+  var enableChoice = settingValue(convertedSettings, rawSettings, 'EnableChoice', messageKeys.EnableChoice);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
   var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
@@ -603,6 +608,9 @@ function saveSettings(convertedSettings, rawSettings) {
   if (enableScrape !== undefined) {
     localStorage.setItem('EnableScrape', String(enableScrape ? 1 : 0));
   }
+  if (enableChoice !== undefined) {
+    localStorage.setItem('EnableChoice', String(enableChoice ? 1 : 0));
+  }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());
   }
@@ -628,6 +636,7 @@ function buildSystemPrompt() {
   var memoryAvailable = getBoolSetting('EnableMemory', true);
   var calculatorAvailable = getBoolSetting('EnableCalculator', true);
   var locationAvailable = getBoolSetting('EnableLocation', false);
+  var choiceAvailable = getBoolSetting('EnableChoice', true);
 
   var fields = ['"reply":"watch-friendly answer"', '"timeline":null'];
   if (searchAvailable) fields.push('"search":null');
@@ -636,6 +645,7 @@ function buildSystemPrompt() {
   if (memoryAvailable) fields.push('"notes":null');
   if (calculatorAvailable) fields.push('"calc":null');
   if (locationAvailable) fields.push('"location":null');
+  if (choiceAvailable) fields.push('"choice":null');
 
   var lines = [
     'You are a practical assistant for a Pebble smartwatch. Output only valid JSON in this exact shape, with no markdown: {' + fields.join(',') + '}. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
@@ -654,6 +664,10 @@ function buildSystemPrompt() {
   }
   if (locationAvailable) {
     lines.push('Location tool: if the user asks about their location, nearby places, or asks "where am I", set location to true to receive coordinates and approximate place name; otherwise keep it null.');
+  }
+
+  if (choiceAvailable) {
+    lines.push('Choice tool: if you need the user to pick from a small set of options, instead of asking open-ended, set choice to {"question":"short question","options":["option1","option2"]}. Keep options very short (under 30 chars each) and at most 7 options. The watch will display the question and options as a selectable menu. This is useful for ambiguous requests or when the user needs to narrow down what they want. After the user selects, answer and set choice back to null.');
   }
 
   lines.push('Timeline tool: if the user asks to add/schedule/remind/put something on the timeline, set timeline to {"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}. If time is ambiguous, ask a short clarifying question and keep timeline null.');
@@ -709,7 +723,8 @@ function parseAssistantContent(content) {
       notes: parsed.notes || null,
       calc: parsed.calc || null,
       weather: parsed.weather || null,
-      location: parsed.location || null
+      location: parsed.location || null,
+      choice: parsed.choice || null
     };
   } catch (err) {
     return {
@@ -720,7 +735,8 @@ function parseAssistantContent(content) {
       notes: null,
       calc: null,
       weather: null,
-      location: null
+      location: null,
+      choice: null
     };
   }
 }
@@ -1749,7 +1765,8 @@ function callOpenRouter(prompt) {
   var contextText =
     'Search available: ' + (searchAvailable ? 'yes, request Brave Search with the search field when needed.' : 'no.') +
     '\nScrape available: ' + (scrapeAvailable ? 'yes, request Firecrawl scrape with the scrape field when needed.' : 'no.') +
-    '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.');
+    '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.') +
+    '\nChoice available: ' + (getBoolSetting('EnableChoice', true) ? 'yes, request choice when you need the user to pick from options.' : 'no.');
 
   var baseMessages = buildMessages(contextText);
   var userMessage = { role: 'user', content: prompt };
@@ -1845,6 +1862,25 @@ function callOpenRouter(prompt) {
       }
       return;
     }
+
+    if (parsed.choice) {
+      if (!getBoolSetting('EnableChoice', true)) {
+        showError('Choice prompts disabled.', 'Model requested choice tool while disabled');
+        return;
+      }
+      var choiceQuestion = String(parsed.choice.question || 'Choose');
+      var choiceOptions = (parsed.choice.options || []).slice(0, 7);
+      if (choiceOptions.length === 0) {
+        choiceOptions = ['Yes', 'No'];
+      }
+      sendToWatch({ Status: 'Choose', ChoiceQuestion: choiceQuestion, ChoiceOptions: choiceOptions.join('\n') });
+      pendingChoiceGeneration = generation;
+      pendingChoicePrompt = prompt;
+      var assistantWithChoice = { role: 'assistant', content: JSON.stringify({ reply: parsed.reply || '', choice: parsed.choice }) };
+      pendingChoiceMessages = baseMessages.concat([userMessage, assistantWithChoice]);
+      return;
+    }
+
     finishAssistantTurn(prompt, [], parsed, alreadySent);
   });
 }
@@ -1997,6 +2033,14 @@ Pebble.addEventListener('appmessage', function(e) {
     return;
   }
 
+  if (e.payload && e.payload.ToggleChoice) {
+    var choiceEnabled = toggleBoolSetting('EnableChoice', true);
+    sendToWatch({ Status: choiceEnabled ? 'Choice on' : 'Choice off' });
+    sendToolStatesToWatch();
+    sendStatsToWatch();
+    return;
+  }
+
   if (e.payload && e.payload.OpenSessions) {
     sendToWatch({ OpenSessions: sessionsToWatchText() });
     return;
@@ -2018,6 +2062,42 @@ Pebble.addEventListener('appmessage', function(e) {
   if (prompt) {
     callOpenRouter(prompt);
   }
+
+  var choiceAnswer = e.payload && e.payload.ChoiceAnswer;
+  if (choiceAnswer !== undefined) {
+    debugLog('ChoiceAnswer=' + String(choiceAnswer) + ' pending=' + !!pendingChoiceMessages);
+    if (pendingChoiceMessages) {
+      var answer = String(choiceAnswer || '');
+      if (!answer) {
+        answer = 'The user said their own answer.';
+      }
+      var choiceToolResult = { role: 'tool', content: 'User selected: ' + answer };
+      var followMessages = pendingChoiceMessages.concat([choiceToolResult]);
+      callModelStream(followMessages, pendingChoiceGeneration, function(finalParsed, finalAlreadySent) {
+        finishAssistantTurn(pendingChoicePrompt, [{ role: 'assistant', content: JSON.stringify({ choice: { answer: answer } }) }, choiceToolResult], finalParsed, finalAlreadySent);
+      });
+      pendingChoiceGeneration = 0;
+      pendingChoicePrompt = null;
+      pendingChoiceMessages = null;
+    }
+    return;
+  }
+
+  var choiceCancel = e.payload && e.payload.ChoiceCancel;
+  if (choiceCancel) {
+    debugLog('ChoiceCancel pending=' + !!pendingChoiceMessages);
+    if (pendingChoiceMessages) {
+      var cancelResult = { role: 'tool', content: 'User cancelled the choice prompt.' };
+      var cancelMessages = pendingChoiceMessages.concat([cancelResult]);
+      callModelStream(cancelMessages, pendingChoiceGeneration, function(finalParsed, finalAlreadySent) {
+        finishAssistantTurn(pendingChoicePrompt, [{ role: 'assistant', content: JSON.stringify({ choice: null }) }, cancelResult], finalParsed, finalAlreadySent);
+      });
+      pendingChoiceGeneration = 0;
+      pendingChoicePrompt = null;
+      pendingChoiceMessages = null;
+    }
+    return;
+  }
 });
 
 Pebble.addEventListener('showConfiguration', function() {
@@ -2037,6 +2117,7 @@ Pebble.addEventListener('showConfiguration', function() {
     EnableSearch: getBoolSetting('EnableSearch', false),
     EnableScrape: getBoolSetting('EnableScrape', false),
     EnableWeather: getBoolSetting('EnableWeather', true),
+    EnableChoice: getBoolSetting('EnableChoice', true),
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),
     FirecrawlApiKey: getSetting('FirecrawlApiKey', ''),
     DebugLog: localStorage.getItem('DebugLog') || ''
