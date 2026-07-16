@@ -1766,7 +1766,7 @@ function callOpenRouter(prompt) {
     'Search available: ' + (searchAvailable ? 'yes, request Brave Search with the search field when needed.' : 'no.') +
     '\nScrape available: ' + (scrapeAvailable ? 'yes, request Firecrawl scrape with the scrape field when needed.' : 'no.') +
     '\nWeather available: ' + (weatherAvailable ? 'yes, request weather with the weather field when needed.' : 'no.') +
-    '\nChoice available: ' + (getBoolSetting('EnableChoice', true) ? 'yes, request choice when you need the user to pick from options.' : 'no.');
+    '\nChoice/ask/question available: ' + (getBoolSetting('EnableChoice', true) ? 'yes, request choice when you need the user to pick from options.' : 'no.');
 
   var baseMessages = buildMessages(contextText);
   var userMessage = { role: 'user', content: prompt };
