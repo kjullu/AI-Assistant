@@ -1,6 +1,6 @@
 # 0.3.0-DEV - NOT OUT YET
 
-- Add Firecrawl scrape tool for fetching page content as a tool result.
+- Add choice tool for presenting multiple-choice questions on the watch with UP/DOWN to navigate, SELECT to pick, BACK to cancel, and a "Say your own" option that opens dictation.
 - Weather tool can now accept location instead of just city.
 - Only include tool explanations and JSON fields in the system prompt when the tool is enabled.
 - Convert location from system prompt to an actual tool that the model can request.
