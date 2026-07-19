@@ -11,10 +11,12 @@
 - Fix streaming fallback tool calls and stale choice continuations.
 - Add a Timeline toggle to phone and watch settings.
 - Update one saved session record per conversation instead of saving every turn as a new session.
-- Reject conversions between incompatible unit types and label built-in currency rates as approximate.
+- Fetch current currency rates from Frankfurter and reject conversions between incompatible unit types.
 - Remove conversation content, queries, and URLs from persistent debug logs.
 - Add focused regression tests for request, tool, choice, session, and queue behavior.
 - Update privacy and control documentation.
+- Fix tool-setting navigation keeping selected rows off-screen or behind the scroll indicator.
+- Add an opt-in Health tool for querying watch-recorded activity, sleep, calorie, and heart-rate data.
 
 # Changelog 0.2.0
 

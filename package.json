@@ -72,7 +72,11 @@
       "ChoiceCancel",
       "RequestId",
       "ToggleTimeline",
-      "EnableTimeline"
+      "EnableTimeline",
+      "ToggleHealth",
+      "EnableHealth",
+      "HealthRequest",
+      "HealthData"
     ],
     "resources": {
       "media": []

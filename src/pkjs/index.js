@@ -11,6 +11,7 @@ var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 var TIMELINE_URL = 'https://timeline-api.getpebble.com/v1/user/pins/';
+var FRANKFURTER_RATE_URL = 'https://api.frankfurter.dev/v2/rate/';
 
 var REGION_FALLBACKS = {
   'central europe': { lat: 50.0, lon: 15.0 },
@@ -43,6 +44,7 @@ var MAX_TOOL_CALLS = 8;
 var MAX_TOOL_ROUNDS = 5;
 var MAX_PARALLEL_TOOLS = 3;
 var MAX_SEND_ATTEMPTS = 3;
+var CURRENCY_CACHE_MS = 12 * 60 * 60 * 1000;
 
 var conversationHistory = [];
 var activeSessionCreatedAt = null;
@@ -54,6 +56,10 @@ var currentRequestId = 0;
 var pendingChoiceGeneration = 0;
 var pendingChoiceRequestId = 0;
 var pendingChoiceCallback = null;
+var pendingHealthGeneration = 0;
+var pendingHealthRequestId = 0;
+var pendingHealthCallback = null;
+var pendingHealthTimer = null;
 
 function debugLog(message) {
   var line = new Date().toISOString() + ' ' + message;
@@ -95,6 +101,16 @@ function clearPendingChoice() {
   pendingChoiceCallback = null;
 }
 
+function clearPendingHealth() {
+  if (pendingHealthTimer) {
+    clearTimeout(pendingHealthTimer);
+  }
+  pendingHealthGeneration = 0;
+  pendingHealthRequestId = 0;
+  pendingHealthCallback = null;
+  pendingHealthTimer = null;
+}
+
 function cancelActiveRequests(notify, requestId) {
   debugLog('cancelActiveRequests active=' + activeRequests.length + ' generation=' + requestGeneration);
   requestGeneration++;
@@ -108,6 +124,7 @@ function cancelActiveRequests(notify, requestId) {
   }
   activeRequests = [];
   clearPendingChoice();
+  clearPendingHealth();
   sendQueue = sendQueue.filter(function(item) {
     return !item.requestId || item.requestId !== requestId;
   });
@@ -321,7 +338,8 @@ function sendToolStatesToWatch() {
       ';scrape=' + (getScrapeAvailable() ? '1' : '0') +
       ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0') +
       ';choice=' + (getBoolSetting('EnableChoice', true) ? '1' : '0') +
-      ';timeline=' + (getBoolSetting('EnableTimeline', true) ? '1' : '0')
+      ';timeline=' + (getBoolSetting('EnableTimeline', true) ? '1' : '0') +
+      ';health=' + (getBoolSetting('EnableHealth', false) ? '1' : '0')
   });
 }
 
@@ -633,6 +651,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableScrape = settingValue(convertedSettings, rawSettings, 'EnableScrape', messageKeys.EnableScrape);
   var enableChoice = settingValue(convertedSettings, rawSettings, 'EnableChoice', messageKeys.EnableChoice);
   var enableTimeline = settingValue(convertedSettings, rawSettings, 'EnableTimeline', messageKeys.EnableTimeline);
+  var enableHealth = settingValue(convertedSettings, rawSettings, 'EnableHealth', messageKeys.EnableHealth);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
   var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
@@ -672,6 +691,9 @@ function saveSettings(convertedSettings, rawSettings) {
   if (enableTimeline !== undefined) {
     localStorage.setItem('EnableTimeline', String(enableTimeline ? 1 : 0));
   }
+  if (enableHealth !== undefined) {
+    localStorage.setItem('EnableHealth', String(enableHealth ? 1 : 0));
+  }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());
   }
@@ -699,6 +721,7 @@ function buildSystemPrompt() {
   var locationAvailable = getBoolSetting('EnableLocation', false);
   var choiceAvailable = getBoolSetting('EnableChoice', true);
   var timelineAvailable = getBoolSetting('EnableTimeline', true);
+  var healthAvailable = getBoolSetting('EnableHealth', false);
 
   var lines = [
     'You are a practical assistant for a Pebble smartwatch. Output only valid JSON with toolCalls first, in this exact shape and with no markdown: {"toolCalls":[],"reply":"watch-friendly answer"}. Each tool call is {"name":"tool name","arguments":{}}. When requesting tools, leave reply empty. When answering, return an empty toolCalls array. The user message is speech-to-text from a watch microphone, so it may contain errors, be ambiguous, or miss words. If you are unsure what they meant, ask a brief clarifying question. Keep replies compact and readable on a tiny screen. Use 24-hour time.',
@@ -727,11 +750,15 @@ function buildSystemPrompt() {
     lines.push('Timeline tool: use {"name":"timeline","arguments":{"title":"short title","time":"ISO-8601 UTC date-time","body":"details","durationMinutes":30,"reminderMinutes":10}} only when the user asks to add or schedule something. Clarify ambiguous times first.');
   }
 
+  if (healthAvailable) {
+    lines.push('Health tool: use {"name":"health","arguments":{"period":"today|yesterday|7d"}} only when the user asks about their Health data. It returns watch-recorded steps, active time, distance, sleep, calories, current activity, and current heart rate when supported. Treat it as informational, not medical advice.');
+  }
+
   if (memoryAvailable) {
     lines.push('Memory tool: use {"name":"memory","arguments":{"add":["new note"],"replace":[{"index":0,"text":"updated note"}]}} only for durable preferences, facts, or explicit remember requests.');
   }
   if (calculatorAvailable) {
-    lines.push('Calculator tool: use {"name":"calculator","arguments":{"expression":"2+2*10"}} or {"name":"calculator","arguments":{"value":12,"from":"eur","to":"dkk"}} for exact arithmetic or conversions.');
+    lines.push('Calculator tool: use {"name":"calculator","arguments":{"expression":"2+2*10"}} or {"name":"calculator","arguments":{"value":12,"from":"EUR","to":"DKK"}} for exact arithmetic, physical-unit conversions, or current currency conversion through Frankfurter.');
   }
 
   return lines.join(' ');
@@ -816,16 +843,9 @@ function unitDefinition(unit) {
   return value ? { dimension: value[0], factor: value[1] } : null;
 }
 
-function currencyRate(unit) {
-  var rates = {
-    dkk: 1,
-    eur: 7.46,
-    usd: 6.85,
-    gbp: 8.75,
-    sek: 0.68,
-    nok: 0.64
-  };
-  return rates[String(unit || '').toLowerCase()];
+function currencyCode(value) {
+  var code = String(value || '').toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : null;
 }
 
 function runCalculatorTool(calc) {
@@ -844,14 +864,6 @@ function runCalculatorTool(calc) {
       throw new Error('Invalid numeric value for conversion');
     }
 
-    var fromCurrency = currencyRate(calc.from);
-    var toCurrency = currencyRate(calc.to);
-    if (fromCurrency && toCurrency) {
-      var dkkValue = value * fromCurrency;
-      var currencyResult = dkkValue / toCurrency;
-      return 'Approximate currency result: ' + value + ' ' + calc.from + ' = ' + currencyResult + ' ' + calc.to + ' (built-in rates)';
-    }
-
     var fromUnit = unitDefinition(calc.from);
     var toUnit = unitDefinition(calc.to);
     if (!fromUnit || !toUnit) {
@@ -867,6 +879,86 @@ function runCalculatorTool(calc) {
   }
 
   throw new Error('Unsupported calculator request');
+}
+
+function getCachedCurrencyRate(base, quote) {
+  try {
+    var cached = JSON.parse(localStorage.getItem('CurrencyRate:' + base + ':' + quote) || 'null');
+    if (cached && cached.rate > 0 && Date.now() - cached.cachedAt < CURRENCY_CACHE_MS) {
+      return cached;
+    }
+  } catch (err) {
+  }
+  return null;
+}
+
+function runCurrencyConversion(calc, generation, callback) {
+  var value = Number(calc.value);
+  var base = currencyCode(calc.from);
+  var quote = currencyCode(calc.to);
+  if (isNaN(value) || !base || !quote) {
+    callback(null, 'Invalid currency conversion request.');
+    return;
+  }
+  if (base === quote) {
+    callback('Currency result: ' + value + ' ' + base + ' = ' + value + ' ' + quote, null);
+    return;
+  }
+
+  var cached = getCachedCurrencyRate(base, quote);
+  if (cached) {
+    callback('Currency result: ' + value + ' ' + base + ' = ' + (value * cached.rate) + ' ' + quote + ' (rate dated ' + cached.date + ')', null);
+    return;
+  }
+
+  sendRequestStatus('Getting exchange rate...', generation);
+  var request = new XMLHttpRequest();
+  trackRequest(request, generation);
+  request.open('GET', FRANKFURTER_RATE_URL + encodeURIComponent(base) + '/' + encodeURIComponent(quote), true);
+  request.setRequestHeader('Accept', 'application/json');
+  request.timeout = 15000;
+  request.onload = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) return;
+    if (request.status < 200 || request.status >= 300) {
+      callback(null, 'Currency service failed (' + request.status + ').');
+      return;
+    }
+    try {
+      var json = JSON.parse(request.responseText);
+      var rate = Number(json.rate);
+      if (!rate || rate <= 0) throw new Error('Missing rate');
+      var rateData = { rate: rate, date: String(json.date || 'latest'), cachedAt: Date.now() };
+      localStorage.setItem('CurrencyRate:' + base + ':' + quote, JSON.stringify(rateData));
+      callback('Currency result: ' + value + ' ' + base + ' = ' + (value * rate) + ' ' + quote + ' (rate dated ' + rateData.date + ')', null);
+    } catch (err) {
+      callback(null, 'Bad currency response.');
+    }
+  };
+  request.onerror = function() {
+    untrackRequest(request);
+    if (requestIsCurrent(request)) callback(null, 'Currency network error.');
+  };
+  request.ontimeout = function() {
+    untrackRequest(request);
+    if (requestIsCurrent(request)) callback(null, 'Currency request timed out.');
+  };
+  request.send();
+}
+
+function runCalculatorToolAsync(calc, generation, callback) {
+  var hasConversion = calc && calc.value !== undefined && calc.from && calc.to;
+  var fromUnit = hasConversion ? unitDefinition(calc.from) : null;
+  var toUnit = hasConversion ? unitDefinition(calc.to) : null;
+  if (hasConversion && !fromUnit && !toUnit && currencyCode(calc.from) && currencyCode(calc.to)) {
+    runCurrencyConversion(calc, generation, callback);
+    return;
+  }
+  try {
+    callback(runCalculatorTool(calc), null);
+  } catch (err) {
+    callback(null, err.message);
+  }
 }
 
 function weatherCodeText(code) {
@@ -1785,6 +1877,33 @@ function executeChoiceTool(args, generation, requestId, callback) {
   sendToWatch({ Status: 'Choose', ChoiceQuestion: clip(question, 240), ChoiceOptions: options.join('\n') }, requestId);
 }
 
+function executeHealthTool(args, generation, requestId, callback) {
+  if (!getBoolSetting('EnableHealth', false)) {
+    callback(null, 'Health access disabled.');
+    return;
+  }
+  if (pendingHealthCallback) {
+    callback(null, 'Another Health request is already active.');
+    return;
+  }
+  var period = String(args.period || 'today').toLowerCase();
+  if (period !== 'today' && period !== 'yesterday' && period !== '7d') {
+    callback(null, 'Health period must be today, yesterday, or 7d.');
+    return;
+  }
+  pendingHealthGeneration = generation;
+  pendingHealthRequestId = requestId;
+  pendingHealthCallback = callback;
+  pendingHealthTimer = setTimeout(function() {
+    if (pendingHealthCallback && pendingHealthGeneration === generation) {
+      var timeoutCallback = pendingHealthCallback;
+      clearPendingHealth();
+      timeoutCallback(null, 'Watch Health request timed out.');
+    }
+  }, 15000);
+  sendToWatch({ Status: 'Reading health...', HealthRequest: period }, requestId);
+}
+
 function executeNamedTool(call, generation, requestId, executionId, callback) {
   var name = call.name;
   var args = call.arguments;
@@ -1805,14 +1924,12 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
     if (!getBoolSetting('EnableCalculator', true)) {
       callback(null, 'Calculator disabled.');
     } else {
-      try {
-        callback(runCalculatorTool(args), null);
-      } catch (err) {
-        callback(null, err.message);
-      }
+      runCalculatorToolAsync(args, generation, callback);
     }
   } else if (name === 'choice') {
     executeChoiceTool(args, generation, requestId, callback);
+  } else if (name === 'health') {
+    executeHealthTool(args, generation, requestId, callback);
   } else if (name === 'memory') {
     if (!getBoolSetting('EnableMemory', true)) {
       callback(null, 'Memory disabled.');
@@ -2171,6 +2288,14 @@ Pebble.addEventListener('appmessage', function(e) {
     return;
   }
 
+  if (e.payload && e.payload.ToggleHealth) {
+    var healthEnabled = toggleBoolSetting('EnableHealth', false);
+    sendToWatch({ Status: healthEnabled ? 'Health on' : 'Health off' });
+    sendToolStatesToWatch();
+    sendStatsToWatch();
+    return;
+  }
+
   if (e.payload && e.payload.OpenSessions) {
     sendToWatch({ OpenSessions: sessionsToWatchText() });
     return;
@@ -2195,6 +2320,17 @@ Pebble.addEventListener('appmessage', function(e) {
   var prompt = e.payload && e.payload.Prompt;
   if (prompt) {
     callOpenRouter(prompt, Number(e.payload.RequestId || 0));
+  }
+
+  var healthData = e.payload && e.payload.HealthData;
+  if (healthData !== undefined) {
+    var healthRequestId = Number(e.payload.RequestId || 0);
+    if (pendingHealthCallback && healthRequestId === pendingHealthRequestId && pendingHealthGeneration === requestGeneration) {
+      var healthCallback = pendingHealthCallback;
+      clearPendingHealth();
+      healthCallback(String(healthData), null);
+    }
+    return;
   }
 
   var choiceAnswer = e.payload && e.payload.ChoiceAnswer;
@@ -2245,6 +2381,7 @@ Pebble.addEventListener('showConfiguration', function() {
     EnableWeather: getBoolSetting('EnableWeather', true),
     EnableChoice: getBoolSetting('EnableChoice', true),
     EnableTimeline: getBoolSetting('EnableTimeline', true),
+    EnableHealth: getBoolSetting('EnableHealth', false),
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),
     FirecrawlApiKey: getSetting('FirecrawlApiKey', ''),
     DebugLog: localStorage.getItem('DebugLog') || ''

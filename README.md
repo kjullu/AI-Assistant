@@ -36,9 +36,13 @@ This app sends dictated prompts, recent conversation context, enabled memory not
 - `Firecrawl Scrape`: when enabled, page URLs are sent to Firecrawl using your API key to fetch readable page content.
 - `Timeline`: when enabled, requested pin content is pushed through Pebble's timeline API.
 - `Calculator`: when enabled, lets the model call a calculator.
+- `Currency`: calculator currency pairs are sent to Frankfurter for current central-bank reference rates; requested amounts are converted locally.
 - `Weather`: when enabled, requested place names are sent to Open-Meteo for geocoding and forecasts.
+- `Health`: when explicitly enabled and requested, steps, activity, distance, sleep, calories, and supported heart-rate data are read from Pebble Health and sent to OpenRouter as tool results.
 
 API keys, memory notes, saved sessions, statistics, settings, and sanitized debug metadata are stored in the Pebble phone app's local storage. Nothing is stored in this repository. Saved sessions contain conversation text and can be viewed or edited in settings.
+
+Health access is disabled by default. Health responses are informational and are not medical advice.
 
 ## Build
 
