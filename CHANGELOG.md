@@ -5,6 +5,16 @@
 - Only include tool explanations and JSON fields in the system prompt when the tool is enabled.
 - Convert location from system prompt to an actual tool that the model can request.
 - Make location lookup fail gracefully by returning an error message to the model instead of halting.
+- Add repeated, ordered tool-call rounds with parallel execution for independent calls.
+- Add request IDs to prevent cancelled response chunks from reaching newer conversations.
+- Add bounded AppMessage retries and preserve queued messages during cancellation.
+- Fix streaming fallback tool calls and stale choice continuations.
+- Add a Timeline toggle to phone and watch settings.
+- Update one saved session record per conversation instead of saving every turn as a new session.
+- Reject conversions between incompatible unit types and label built-in currency rates as approximate.
+- Remove conversation content, queries, and URLs from persistent debug logs.
+- Add focused regression tests for request, tool, choice, session, and queue behavior.
+- Update privacy and control documentation.
 
 # Changelog 0.2.0
 
