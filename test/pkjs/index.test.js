@@ -116,6 +116,55 @@ test('rejects conversions between incompatible dimensions', () => {
   );
 });
 
+test('calculator fetches and caches current currency rates', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Convert ten euro to kroner');
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'calculator', arguments: { value: 10, from: 'EUR', to: 'DKK' } }],
+    reply: ''
+  });
+
+  const currencyRequest = runtime.requests.find(request => request.url && request.url.includes('frankfurter'));
+  assert.equal(currencyRequest.url, 'https://api.frankfurter.dev/v2/rate/EUR/DKK');
+  currencyRequest.status = 200;
+  currencyRequest.responseText = JSON.stringify({ date: '2026-07-19', base: 'EUR', quote: 'DKK', rate: 7.4834 });
+  currencyRequest.onload();
+
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.match(followup.messages.at(-1).content, /74\.834 DKK/);
+  assert.ok(runtime.storage.has('CurrencyRate:EUR:DKK'));
+
+  let cachedResult = '';
+  runtime.context.runCalculatorToolAsync({ value: 2, from: 'EUR', to: 'DKK' }, runtime.context.requestGeneration, result => {
+    cachedResult = result;
+  });
+  assert.match(cachedResult, /14\.9668 DKK/);
+  assert.equal(runtime.requests.filter(request => request.url && request.url.includes('frankfurter')).length, 1);
+});
+
+test('Health tool requests watch data and resumes the model round', () => {
+  const runtime = createRuntime({ EnableHealth: '1' });
+  prompt(runtime, 'How many steps did I take?', 12);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'health', arguments: { period: 'today' } }],
+    reply: ''
+  });
+
+  assert.ok(runtime.sentMessages.some(message => message.HealthRequest === 'today' && message.RequestId === 12));
+  runtime.listeners.appmessage({
+    payload: { HealthData: 'Watch Health data for today: steps=4321;', RequestId: 12 }
+  });
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.match(followup.messages.at(-1).content, /steps=4321/);
+  streamResponse(modelRequests(runtime)[1], { toolCalls: [], reply: 'You took 4,321 steps today.' });
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'You took 4,321 steps today.'));
+});
+
+test('Health instructions are included only when enabled', () => {
+  assert.doesNotMatch(createRuntime().context.buildSystemPrompt(), /Health tool/);
+  assert.match(createRuntime({ EnableHealth: '1' }).context.buildSystemPrompt(), /Health tool/);
+});
+
 test('stream fallback can continue into a tool round', () => {
   const runtime = createRuntime();
   prompt(runtime);

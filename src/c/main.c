@@ -11,6 +11,7 @@
 #define TOGGLE_H 12
 #define KNOB_SIZE 8
 #define DIVIDER_GAP 6
+#define SETTINGS_SCROLL_MARGIN 10
 
 #ifdef PBL_COLOR
 #define ACCENT_AI     GColorCobaltBlue
@@ -74,6 +75,7 @@ static bool s_search_enabled;
 static bool s_weather_enabled = true;
 static bool s_choice_enabled = true;
 static bool s_timeline_enabled = true;
+static bool s_health_enabled;
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 static AppTimer *s_touch_long_timer;
 static bool s_touch_long_fired;
@@ -305,7 +307,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 7;
+  return 8;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -334,9 +336,13 @@ static void get_settings_row(int8_t index, SettingRow *out) {
       out->label = "Choice";
       out->enabled = s_choice_enabled;
       break;
-    default:
+    case 6:
       out->label = "Timeline";
       out->enabled = s_timeline_enabled;
+      break;
+    default:
+      out->label = "Health";
+      out->enabled = s_health_enabled;
       break;
   }
 }
@@ -814,7 +820,30 @@ static void layout_chat(bool scroll_to_bottom) {
   }
   scroll_layer_set_content_size(s_scroll_layer, GSize(width, content_height));
 
-  if (scroll_to_bottom && content_height > bounds.size.h) {
+  if (s_show_settings && content_height > bounds.size.h) {
+    GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+    int16_t row_top = (PADDING * 2) + LABEL_HEIGHT + 2 + DIVIDER_GAP +
+                      (s_settings_selection * ROW_HEIGHT);
+    int16_t row_bottom = row_top + ROW_HEIGHT;
+    int16_t visible_top = -offset.y + SETTINGS_SCROLL_MARGIN;
+    int16_t visible_bottom = -offset.y + bounds.size.h -
+                             STATUS_BAR_LAYER_HEIGHT - SETTINGS_SCROLL_MARGIN;
+
+    if (row_top < visible_top) {
+      offset.y = SETTINGS_SCROLL_MARGIN - row_top;
+    } else if (row_bottom > visible_bottom) {
+      offset.y = bounds.size.h - STATUS_BAR_LAYER_HEIGHT -
+                 SETTINGS_SCROLL_MARGIN - row_bottom;
+    }
+
+    int16_t min_y = bounds.size.h - content_height;
+    if (offset.y > 0) {
+      offset.y = 0;
+    } else if (offset.y < min_y) {
+      offset.y = min_y;
+    }
+    scroll_layer_set_content_offset(s_scroll_layer, offset, false);
+  } else if (scroll_to_bottom && content_height > bounds.size.h) {
     scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, -(content_height - bounds.size.h)), false);
   }
 }
@@ -826,6 +855,92 @@ static void append_response_chunk(const char *chunk) {
   size_t remaining = sizeof(s_assistant_response) - current_len - 1;
   if (remaining > 0) {
     strncat(s_assistant_response, chunk, remaining);
+  }
+}
+
+static bool health_metric_available(HealthMetric metric, time_t start, time_t end) {
+  return health_service_metric_accessible(metric, start, end) & HealthServiceAccessibilityMaskAvailable;
+}
+
+static void append_health_value(char *buffer, size_t size, const char *name,
+                                HealthMetric metric, time_t start, time_t end, int divisor) {
+  size_t used = strlen(buffer);
+  if (used >= size - 1) {
+    return;
+  }
+  if (health_metric_available(metric, start, end)) {
+    HealthValue value = health_service_sum(metric, start, end);
+    snprintf(buffer + used, size - used, "%s=%ld; ", name, (long)(value / divisor));
+  } else {
+    snprintf(buffer + used, size - used, "%s=unavailable; ", name);
+  }
+}
+
+static void send_health_data(const char *period, uint32_t request_id) {
+  char health_text[768];
+  time_t now = time(NULL);
+  struct tm day = *localtime(&now);
+  day.tm_hour = 0;
+  day.tm_min = 0;
+  day.tm_sec = 0;
+  time_t today = mktime(&day);
+  time_t start = today;
+  time_t end = now;
+  const char *period_name = "today";
+
+  if (strcmp(period, "yesterday") == 0) {
+    day.tm_mday -= 1;
+    start = mktime(&day);
+    end = today;
+    period_name = "yesterday";
+  } else if (strcmp(period, "7d") == 0) {
+    day.tm_mday -= 6;
+    start = mktime(&day);
+    period_name = "last 7 days";
+  }
+
+  snprintf(health_text, sizeof(health_text), "Watch Health data for %s: ", period_name);
+  if (!s_health_enabled) {
+    strncat(health_text, "Health access is disabled.", sizeof(health_text) - strlen(health_text) - 1);
+  } else {
+    append_health_value(health_text, sizeof(health_text), "steps", HealthMetricStepCount, start, end, 1);
+    append_health_value(health_text, sizeof(health_text), "active_minutes", HealthMetricActiveSeconds, start, end, 60);
+    append_health_value(health_text, sizeof(health_text), "distance_m", HealthMetricWalkedDistanceMeters, start, end, 1);
+    append_health_value(health_text, sizeof(health_text), "sleep_minutes", HealthMetricSleepSeconds, start, end, 60);
+    append_health_value(health_text, sizeof(health_text), "restful_sleep_minutes", HealthMetricSleepRestfulSeconds, start, end, 60);
+    append_health_value(health_text, sizeof(health_text), "active_kcal", HealthMetricActiveKCalories, start, end, 1);
+    append_health_value(health_text, sizeof(health_text), "resting_kcal", HealthMetricRestingKCalories, start, end, 1);
+
+    size_t used = strlen(health_text);
+    if (health_metric_available(HealthMetricHeartRateBPM, now - (15 * 60), now)) {
+      snprintf(health_text + used, sizeof(health_text) - used, "current_heart_rate_bpm=%ld; ",
+               (long)health_service_peek_current_value(HealthMetricHeartRateBPM));
+    } else {
+      snprintf(health_text + used, sizeof(health_text) - used, "current_heart_rate_bpm=unavailable; ");
+    }
+
+    HealthActivityMask activities = health_service_peek_current_activities();
+    const char *activity = "none";
+    if (activities & HealthActivityRun) activity = "running";
+    else if (activities & HealthActivityWalk) activity = "walking";
+    else if (activities & HealthActivityOpenWorkout) activity = "workout";
+    else if (activities & HealthActivityRestfulSleep) activity = "restful sleep";
+    else if (activities & HealthActivitySleep) activity = "sleeping";
+    used = strlen(health_text);
+    snprintf(health_text + used, sizeof(health_text) - used, "current_activity=%s.", activity);
+  }
+
+  DictionaryIterator *iter;
+  AppMessageResult result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK || !iter) {
+    update_display("Health send failed");
+    return;
+  }
+  dict_write_cstring(iter, MESSAGE_KEY_HealthData, health_text);
+  dict_write_uint32(iter, MESSAGE_KEY_RequestId, request_id);
+  dict_write_end(iter);
+  if (app_message_outbox_send() != APP_MSG_OK) {
+    update_display("Health send failed");
   }
 }
 
@@ -900,6 +1015,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *tool_states_tuple = dict_find(iter, MESSAGE_KEY_ToolStates);
   Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_Error);
   Tuple *request_id_tuple = dict_find(iter, MESSAGE_KEY_RequestId);
+  Tuple *health_request_tuple = dict_find(iter, MESSAGE_KEY_HealthRequest);
 
   // Responses from a cancelled or replaced turn must not leak into the current transcript.
   if (request_id_tuple && request_id_tuple->value->uint32 != s_active_request_id) {
@@ -907,6 +1023,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   }
   if (s_cancel_pending && request_id_tuple) {
     return;
+  }
+
+  if (health_request_tuple && request_id_tuple) {
+    send_health_data(health_request_tuple->value->cstring, request_id_tuple->value->uint32);
   }
 
   //USR: Default status to Ready. if status_tuple- is set, then use that for status (as a string?)
@@ -917,7 +1037,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     //AI: When a tool is running, reset the response flag so the real answer vibrates later.
     if (strcmp(status, "Searching...") == 0 || strcmp(status, "Scraping...") == 0 ||
         strcmp(status, "Calculating...") == 0 || strcmp(status, "Getting weather...") == 0 ||
-        strcmp(status, "Getting location...") == 0) {
+        strcmp(status, "Getting location...") == 0 || strcmp(status, "Getting exchange rate...") == 0 ||
+        strcmp(status, "Reading health...") == 0) {
       s_response_started = false;
     }
   }
@@ -978,7 +1099,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
                                strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0 ||
                                strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0 ||
                                strcmp(status, "Choice on") == 0 || strcmp(status, "Choice off") == 0 ||
-                               strcmp(status, "Timeline on") == 0 || strcmp(status, "Timeline off") == 0)) {
+                               strcmp(status, "Timeline on") == 0 || strcmp(status, "Timeline off") == 0 ||
+                               strcmp(status, "Health on") == 0 || strcmp(status, "Health off") == 0)) {
     vibes_short_pulse();
     status = "Ready";
   }
@@ -997,6 +1119,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_weather_enabled = strstr(states, "weather=1") != NULL;
     s_choice_enabled = strstr(states, "choice=1") != NULL;
     s_timeline_enabled = strstr(states, "timeline=1") != NULL;
+    s_health_enabled = strstr(states, "health=1") != NULL;
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -1251,6 +1374,9 @@ static void toggle_selected_setting(void) {
       break;
     case 6:
       send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
+      break;
+    case 7:
+      send_simple_command(MESSAGE_KEY_ToggleHealth, "Toggle failed");
       break;
   }
 }
