@@ -77,6 +77,12 @@ module.exports = [
         "defaultValue": true
       },
       {
+        "type": "toggle",
+        "messageKey": "EnableTimeline",
+        "label": "Enable Timeline",
+        "defaultValue": true
+      },
+      {
         "type": "input",
         "messageKey": "BraveSearchApiKey",
         "label": "Brave Search API Key (Necessary for search)",
