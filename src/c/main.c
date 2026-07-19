@@ -60,6 +60,8 @@ static char s_sessions_text[4096];
 static bool s_start_dictation_on_appear;
 static bool s_show_home = true;
 static bool s_request_active;
+static bool s_cancel_pending;
+static uint32_t s_active_request_id;
 static bool s_response_started;
 static bool s_show_settings;
 static bool s_show_sessions;
@@ -71,6 +73,7 @@ static bool s_calculator_enabled = true;
 static bool s_search_enabled;
 static bool s_weather_enabled = true;
 static bool s_choice_enabled = true;
+static bool s_timeline_enabled = true;
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 static AppTimer *s_touch_long_timer;
 static bool s_touch_long_fired;
@@ -93,7 +96,7 @@ static Layer *s_choice_layer;
 
 static void update_display(const char *status);
 static void clear_watch_session(void);
-static void send_simple_command(uint32_t key, const char *failure_status);
+static bool send_simple_command(uint32_t key, const char *failure_status);
 static void toggle_selected_setting(void);
 static void open_sessions_screen(void);
 
@@ -302,7 +305,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 6;
+  return 7;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -327,9 +330,13 @@ static void get_settings_row(int8_t index, SettingRow *out) {
       out->label = "Weather";
       out->enabled = s_weather_enabled;
       break;
-    default:
+    case 5:
       out->label = "Choice";
       out->enabled = s_choice_enabled;
+      break;
+    default:
+      out->label = "Timeline";
+      out->enabled = s_timeline_enabled;
       break;
   }
 }
@@ -429,6 +436,7 @@ static void send_choice_answer(void) {
   } else {
     dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, "");
   }
+  dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
   dict_write_end(iter);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
@@ -464,7 +472,7 @@ static void open_choice_screen(const char *question, const char *options_text) {
         line++;
       }
       if (*line != '\0') {
-        snprintf(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, "%s", line);
+        snprintf(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, "%.*s", MAX_CHOICE_TEXT - 1, line);
         s_choice_option_count++;
       }
       if (next) {
@@ -552,22 +560,27 @@ static void choice_layer_update_proc(Layer *layer, GContext *ctx) {
   layout_choice_text(ctx, layer_get_bounds(layer), true);
 }
 
-static void send_simple_command(uint32_t key, const char *failure_status) {
+static bool send_simple_command(uint32_t key, const char *failure_status) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
   if (result != APP_MSG_OK || !iter) {
     update_display(failure_status);
     vibes_double_pulse();
-    return;
+    return false;
   }
 
   dict_write_uint8(iter, key, 1);
+  if ((key == MESSAGE_KEY_CancelRequest || key == MESSAGE_KEY_ClearSession) && s_active_request_id != 0) {
+    dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
+  }
   dict_write_end(iter);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
     update_display(failure_status);
     vibes_double_pulse();
+    return false;
   }
+  return true;
 }
 
 static void clear_watch_session(void) {
@@ -835,16 +848,15 @@ static void send_prompt(const char *prompt) {
     return;
   }
 
-  // If a request is still running, cancel it so responses don't interleave.
-  if (s_request_active) {
-    send_simple_command(MESSAGE_KEY_CancelRequest, "Cancel failed");
-  }
-
   // Store the latest prompt locally and clear the previous assistant reply.
   snprintf(s_last_prompt, sizeof(s_last_prompt), "%s", prompt);
   s_assistant_response[0] = '\0';
   s_show_home = false;
   s_request_active = true;
+  s_active_request_id++;
+  if (s_active_request_id == 0) {
+    s_active_request_id = 1;
+  }
   s_response_started = false;
   if (s_chat_history[0] != '\0') {
     append_chat_history("\n\n");
@@ -866,6 +878,7 @@ static void send_prompt(const char *prompt) {
 
   // Put the prompt into the message under the Prompt key, then send it.
   dict_write_cstring(iter, MESSAGE_KEY_Prompt, s_last_prompt);
+  dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
   dict_write_end(iter);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
@@ -886,6 +899,15 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *stats_tuple = dict_find(iter, MESSAGE_KEY_StatsText);
   Tuple *tool_states_tuple = dict_find(iter, MESSAGE_KEY_ToolStates);
   Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_Error);
+  Tuple *request_id_tuple = dict_find(iter, MESSAGE_KEY_RequestId);
+
+  // Responses from a cancelled or replaced turn must not leak into the current transcript.
+  if (request_id_tuple && request_id_tuple->value->uint32 != s_active_request_id) {
+    return;
+  }
+  if (s_cancel_pending && request_id_tuple) {
+    return;
+  }
 
   //USR: Default status to Ready. if status_tuple- is set, then use that for status (as a string?)
   //AI: Default to "Ready" unless the phone sent a different status string.
@@ -953,9 +975,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   } else if (status_tuple && (strcmp(status, "Location on") == 0 || strcmp(status, "Location off") == 0 ||
                               strcmp(status, "Memory on") == 0 || strcmp(status, "Memory off") == 0 ||
                               strcmp(status, "Calculator on") == 0 || strcmp(status, "Calculator off") == 0 ||
-                              strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0 ||
-                              strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0 ||
-                              strcmp(status, "Choice on") == 0 || strcmp(status, "Choice off") == 0)) {
+                               strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0 ||
+                               strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0 ||
+                               strcmp(status, "Choice on") == 0 || strcmp(status, "Choice off") == 0 ||
+                               strcmp(status, "Timeline on") == 0 || strcmp(status, "Timeline off") == 0)) {
     vibes_short_pulse();
     status = "Ready";
   }
@@ -973,6 +996,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_search_enabled = strstr(states, "search=1") != NULL;
     s_weather_enabled = strstr(states, "weather=1") != NULL;
     s_choice_enabled = strstr(states, "choice=1") != NULL;
+    s_timeline_enabled = strstr(states, "timeline=1") != NULL;
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -1008,6 +1032,37 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   update_display(status);
 }
 
+static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  if (dict_find(iter, MESSAGE_KEY_Prompt)) {
+    s_request_active = false;
+    update_display("Send failed");
+    vibes_double_pulse();
+  } else if (dict_find(iter, MESSAGE_KEY_CancelRequest)) {
+    s_cancel_pending = false;
+    s_request_active = true;
+    update_display("Cancel failed");
+    vibes_double_pulse();
+  }
+}
+
+static void outbox_sent_callback(DictionaryIterator *iter, void *context) {
+  if (dict_find(iter, MESSAGE_KEY_CancelRequest)) {
+    s_cancel_pending = false;
+    s_active_request_id++;
+    if (s_active_request_id == 0) {
+      s_active_request_id = 1;
+    }
+    update_display("Cancelled");
+  }
+}
+
+static void inbox_dropped_callback(AppMessageResult reason, void *context) {
+  if (s_request_active) {
+    update_display("Message dropped");
+    vibes_double_pulse();
+  }
+}
+
 // Pebble dictation calls this after speech recognition succeeds or fails.
 //USR: If user has finished their dictation, then send it to the Phone, else update the display with a "Dictation cancelled"
 //AI: If speech recognition succeeded, send the transcription to the phone; otherwise show "Dictation cancelled".
@@ -1020,6 +1075,7 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
       AppMessageResult result = app_message_outbox_begin(&iter);
       if (result == APP_MSG_OK && iter) {
         dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcription);
+        dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
         dict_write_end(iter);
         app_message_outbox_send();
       }
@@ -1070,6 +1126,10 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
   clear_watch_session();
 
   send_simple_command(MESSAGE_KEY_ClearSession, "Cleared watch only");
+  s_active_request_id++;
+  if (s_active_request_id == 0) {
+    s_active_request_id = 1;
+  }
 }
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
@@ -1078,6 +1138,7 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
     AppMessageResult result = app_message_outbox_begin(&iter);
     if (result == APP_MSG_OK && iter) {
       dict_write_uint8(iter, MESSAGE_KEY_ChoiceCancel, 1);
+      dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
       dict_write_end(iter);
       app_message_outbox_send();
     }
@@ -1100,9 +1161,11 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
   }
 
   if (s_request_active) {
-    s_request_active = false;
-    update_display("Cancelling...");
-    send_simple_command(MESSAGE_KEY_CancelRequest, "Cancel failed");
+    if (send_simple_command(MESSAGE_KEY_CancelRequest, "Cancel failed")) {
+      s_request_active = false;
+      s_cancel_pending = true;
+      update_display("Cancelling...");
+    }
     return;
   }
 
@@ -1137,7 +1200,8 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   }
 
   if (s_show_settings) {
-    s_settings_selection = (s_settings_selection + 5) % 6;
+    int8_t count = settings_row_count();
+    s_settings_selection = (s_settings_selection + count - 1) % count;
     update_display("Ready");
   } else if (s_show_home) {
     open_settings_screen();
@@ -1155,7 +1219,7 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   }
 
   if (s_show_settings) {
-    s_settings_selection = (s_settings_selection + 1) % 6;
+    s_settings_selection = (s_settings_selection + 1) % settings_row_count();
     update_display("Ready");
   } else if (s_show_home) {
     open_sessions_screen();
@@ -1185,6 +1249,9 @@ static void toggle_selected_setting(void) {
     case 5:
       send_simple_command(MESSAGE_KEY_ToggleChoice, "Toggle failed");
       break;
+    case 6:
+      send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
+      break;
   }
 }
 
@@ -1195,6 +1262,10 @@ static void touch_long_timer_callback(void *context) {
     s_touch_long_fired = true;
     clear_watch_session();
     send_simple_command(MESSAGE_KEY_ClearSession, "Cleared watch only");
+    s_active_request_id++;
+    if (s_active_request_id == 0) {
+      s_active_request_id = 1;
+    }
   }
 }
 
@@ -1412,6 +1483,9 @@ static void init(void) {
   });
 
   app_message_register_inbox_received(inbox_received_callback); //USR: IDK, something with the AppMessage?
+  app_message_register_inbox_dropped(inbox_dropped_callback);
+  app_message_register_outbox_failed(outbox_failed_callback);
+  app_message_register_outbox_sent(outbox_sent_callback);
   //AI: Register the function that should run when a message arrives from the phone.
   app_message_open(4096, 2048); //USR: AGAIN, something with the AppMessage?
   //AI: Open AppMessage with a 4096-byte inbox and a 2048-byte outbox.

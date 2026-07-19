@@ -6,6 +6,9 @@
     "Ai-chat-app"
   ],
   "private": true,
+  "scripts": {
+    "test": "node --test test/pkjs/*.test.js"
+  },
   "dependencies": {
     "@rebble/clay": "^1.0.6"
   },
@@ -66,7 +69,10 @@
       "ChoiceQuestion",
       "ChoiceOptions",
       "ChoiceAnswer",
-      "ChoiceCancel"
+      "ChoiceCancel",
+      "RequestId",
+      "ToggleTimeline",
+      "EnableTimeline"
     ],
     "resources": {
       "media": []
