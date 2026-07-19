@@ -83,6 +83,13 @@ module.exports = [
         "defaultValue": true
       },
       {
+        "type": "toggle",
+        "messageKey": "EnableHealth",
+        "label": "Give AI Health Data",
+        "description": "Allows the AI to request Health data stored on the watch.",
+        "defaultValue": false
+      },
+      {
         "type": "input",
         "messageKey": "BraveSearchApiKey",
         "label": "Brave Search API Key (Necessary for search)",
