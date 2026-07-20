@@ -38,7 +38,7 @@ This app sends dictated prompts, recent conversation context, enabled memory not
 - `Calculator`: when enabled, lets the model call a calculator.
 - `Currency`: calculator currency pairs are sent to Frankfurter for current central-bank reference rates; requested amounts are converted locally.
 - `Weather`: when enabled, requested place names are sent to Open-Meteo for geocoding and forecasts.
-- `Health`: when explicitly enabled and requested, steps, activity, distance, sleep, calories, and supported heart-rate data are read from Pebble Health and sent to OpenRouter as tool results.
+- `Health`: when explicitly enabled and requested, steps, activity, distance, sleep, calories, and supported average/minimum/maximum heart-rate data are read from Pebble Health for an inclusive `from`/`to` date range and sent to OpenRouter as tool results.
 
 API keys, memory notes, saved sessions, statistics, settings, and sanitized debug metadata are stored in the Pebble phone app's local storage. Nothing is stored in this repository. Saved sessions contain conversation text and can be viewed or edited in settings.
 

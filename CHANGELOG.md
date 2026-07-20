@@ -16,7 +16,8 @@
 - Add focused regression tests for request, tool, choice, session, and queue behavior.
 - Update privacy and control documentation.
 - Fix tool-setting navigation keeping selected rows off-screen or behind the scroll indicator.
-- Add an opt-in Health tool for querying watch-recorded activity, sleep, calorie, and heart-rate data.
+- Add an opt-in Health tool for querying watch-recorded activity, sleep, calorie, and average/minimum/maximum heart-rate data over inclusive date ranges.
+- Output final assistant answers as plain text while reserving JSON for tool requests.
 
 # Changelog 0.2.0
 

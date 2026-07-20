@@ -94,6 +94,13 @@ function streamResponse(request, value) {
   request.onload();
 }
 
+function streamTextResponse(request, content) {
+  request.status = 200;
+  request.responseText = `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n`;
+  if (request.onprogress) request.onprogress();
+  request.onload();
+}
+
 function normalResponse(request, value) {
   request.status = 200;
   request.responseText = JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] });
@@ -114,6 +121,15 @@ test('rejects conversions between incompatible dimensions', () => {
     () => runtime.context.runCalculatorTool({ value: 1, from: 'kg', to: 'm' }),
     /incompatible/
   );
+});
+
+test('final answers stream as plain text without a JSON wrapper', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Say hello');
+  streamTextResponse(modelRequests(runtime)[0], 'Hello from Pebble.');
+
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Hello from Pebble.'));
+  assert.match(runtime.context.buildSystemPrompt(), /final watch-friendly answer as plain text/);
 });
 
 test('calculator fetches and caches current currency rates', () => {
@@ -146,11 +162,11 @@ test('Health tool requests watch data and resumes the model round', () => {
   const runtime = createRuntime({ EnableHealth: '1' });
   prompt(runtime, 'How many steps did I take?', 12);
   streamResponse(modelRequests(runtime)[0], {
-    toolCalls: [{ name: 'health', arguments: { period: 'today' } }],
+    toolCalls: [{ name: 'health', arguments: { from: '2026-07-19', to: '2026-07-19' } }],
     reply: ''
   });
 
-  assert.ok(runtime.sentMessages.some(message => message.HealthRequest === 'today' && message.RequestId === 12));
+  assert.ok(runtime.sentMessages.some(message => message.HealthRequest === '2026-07-19|2026-07-19' && message.RequestId === 12));
   runtime.listeners.appmessage({
     payload: { HealthData: 'Watch Health data for today: steps=4321;', RequestId: 12 }
   });
@@ -162,7 +178,9 @@ test('Health tool requests watch data and resumes the model round', () => {
 
 test('Health instructions are included only when enabled', () => {
   assert.doesNotMatch(createRuntime().context.buildSystemPrompt(), /Health tool/);
-  assert.match(createRuntime({ EnableHealth: '1' }).context.buildSystemPrompt(), /Health tool/);
+  const promptText = createRuntime({ EnableHealth: '1' }).context.buildSystemPrompt();
+  assert.match(promptText, /Health tool/);
+  assert.match(promptText, /average\/minimum\/maximum heart rate/);
 });
 
 test('stream fallback can continue into a tool round', () => {

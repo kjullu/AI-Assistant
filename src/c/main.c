@@ -876,33 +876,84 @@ static void append_health_value(char *buffer, size_t size, const char *name,
   }
 }
 
-static void send_health_data(const char *period, uint32_t request_id) {
-  char health_text[768];
-  time_t now = time(NULL);
-  struct tm day = *localtime(&now);
-  day.tm_hour = 0;
-  day.tm_min = 0;
-  day.tm_sec = 0;
-  time_t today = mktime(&day);
-  time_t start = today;
-  time_t end = now;
-  const char *period_name = "today";
+static void append_heart_rate_aggregate(char *buffer, size_t size, const char *name,
+                                        time_t start, time_t end, HealthAggregation aggregation) {
+  size_t used = strlen(buffer);
+  if (used >= size - 1) {
+    return;
+  }
+  HealthServiceAccessibilityMask accessible = health_service_metric_aggregate_averaged_accessible(
+      HealthMetricHeartRateBPM, start, end, aggregation, HealthServiceTimeScopeOnce);
+  if (accessible & HealthServiceAccessibilityMaskAvailable) {
+    HealthValue value = health_service_aggregate_averaged(
+        HealthMetricHeartRateBPM, start, end, aggregation, HealthServiceTimeScopeOnce);
+    snprintf(buffer + used, size - used, "%s=%ld; ", name, (long)value);
+  } else {
+    snprintf(buffer + used, size - used, "%s=unavailable; ", name);
+  }
+}
 
-  if (strcmp(period, "yesterday") == 0) {
-    day.tm_mday -= 1;
-    start = mktime(&day);
-    end = today;
-    period_name = "yesterday";
-  } else if (strcmp(period, "7d") == 0) {
-    day.tm_mday -= 6;
-    start = mktime(&day);
-    period_name = "last 7 days";
+static bool parse_health_date(const char *text, struct tm *date) {
+  if (strlen(text) != 10 || text[4] != '-' || text[7] != '-') {
+    return false;
+  }
+  for (int i = 0; i < 10; i++) {
+    if (i != 4 && i != 7 && (text[i] < '0' || text[i] > '9')) {
+      return false;
+    }
+  }
+  int year = (text[0] - '0') * 1000 + (text[1] - '0') * 100 +
+             (text[2] - '0') * 10 + (text[3] - '0');
+  int month = (text[5] - '0') * 10 + (text[6] - '0');
+  int day = (text[8] - '0') * 10 + (text[9] - '0');
+  if (year < 1970 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
   }
 
-  snprintf(health_text, sizeof(health_text), "Watch Health data for %s: ", period_name);
-  if (!s_health_enabled) {
-    strncat(health_text, "Health access is disabled.", sizeof(health_text) - strlen(health_text) - 1);
+  memset(date, 0, sizeof(*date));
+  date->tm_year = year - 1900;
+  date->tm_mon = month - 1;
+  date->tm_mday = day;
+  date->tm_isdst = -1;
+  time_t timestamp = mktime(date);
+  struct tm normalized = *localtime(&timestamp);
+  return normalized.tm_year == year - 1900 && normalized.tm_mon == month - 1 &&
+         normalized.tm_mday == day;
+}
+
+static void send_health_data(const char *range, uint32_t request_id) {
+  char health_text[768];
+  time_t now = time(NULL);
+  const char *separator = strchr(range, '|');
+  char from_text[11];
+  char to_text[11];
+  struct tm from_date;
+  struct tm to_date;
+  bool valid_range = separator && separator - range == 10 && strlen(separator + 1) == 10;
+  if (valid_range) {
+    memcpy(from_text, range, 10);
+    from_text[10] = '\0';
+    snprintf(to_text, sizeof(to_text), "%s", separator + 1);
+    valid_range = parse_health_date(from_text, &from_date) && parse_health_date(to_text, &to_date);
+  }
+
+  time_t start = valid_range ? mktime(&from_date) : 0;
+  if (valid_range) {
+    to_date.tm_mday += 1;
+  }
+  time_t range_end = valid_range ? mktime(&to_date) : 0;
+  time_t end = range_end > now ? now : range_end;
+  valid_range = valid_range && start < range_end && start < now && end > start;
+
+  if (!valid_range) {
+    snprintf(health_text, sizeof(health_text), "Invalid Health date range. Use inclusive YYYY-MM-DD dates that are not entirely in the future.");
   } else {
+    snprintf(health_text, sizeof(health_text), "Watch Health data from %s through %s: ", from_text, to_text);
+  }
+
+  if (valid_range && !s_health_enabled) {
+    strncat(health_text, "Health access is disabled.", sizeof(health_text) - strlen(health_text) - 1);
+  } else if (valid_range) {
     append_health_value(health_text, sizeof(health_text), "steps", HealthMetricStepCount, start, end, 1);
     append_health_value(health_text, sizeof(health_text), "active_minutes", HealthMetricActiveSeconds, start, end, 60);
     append_health_value(health_text, sizeof(health_text), "distance_m", HealthMetricWalkedDistanceMeters, start, end, 1);
@@ -910,24 +961,29 @@ static void send_health_data(const char *period, uint32_t request_id) {
     append_health_value(health_text, sizeof(health_text), "restful_sleep_minutes", HealthMetricSleepRestfulSeconds, start, end, 60);
     append_health_value(health_text, sizeof(health_text), "active_kcal", HealthMetricActiveKCalories, start, end, 1);
     append_health_value(health_text, sizeof(health_text), "resting_kcal", HealthMetricRestingKCalories, start, end, 1);
+    append_heart_rate_aggregate(health_text, sizeof(health_text), "heart_rate_avg_bpm", start, end, HealthAggregationAvg);
+    append_heart_rate_aggregate(health_text, sizeof(health_text), "heart_rate_min_bpm", start, end, HealthAggregationMin);
+    append_heart_rate_aggregate(health_text, sizeof(health_text), "heart_rate_max_bpm", start, end, HealthAggregationMax);
 
-    size_t used = strlen(health_text);
-    if (health_metric_available(HealthMetricHeartRateBPM, now - (15 * 60), now)) {
-      snprintf(health_text + used, sizeof(health_text) - used, "current_heart_rate_bpm=%ld; ",
-               (long)health_service_peek_current_value(HealthMetricHeartRateBPM));
-    } else {
-      snprintf(health_text + used, sizeof(health_text) - used, "current_heart_rate_bpm=unavailable; ");
+    if (range_end > now) {
+      size_t used = strlen(health_text);
+      if (health_metric_available(HealthMetricHeartRateBPM, now - (15 * 60), now)) {
+        snprintf(health_text + used, sizeof(health_text) - used, "current_heart_rate_bpm=%ld; ",
+                 (long)health_service_peek_current_value(HealthMetricHeartRateBPM));
+      } else {
+        snprintf(health_text + used, sizeof(health_text) - used, "current_heart_rate_bpm=unavailable; ");
+      }
+
+      HealthActivityMask activities = health_service_peek_current_activities();
+      const char *activity = "none";
+      if (activities & HealthActivityRun) activity = "running";
+      else if (activities & HealthActivityWalk) activity = "walking";
+      else if (activities & HealthActivityOpenWorkout) activity = "workout";
+      else if (activities & HealthActivityRestfulSleep) activity = "restful sleep";
+      else if (activities & HealthActivitySleep) activity = "sleeping";
+      used = strlen(health_text);
+      snprintf(health_text + used, sizeof(health_text) - used, "current_activity=%s.", activity);
     }
-
-    HealthActivityMask activities = health_service_peek_current_activities();
-    const char *activity = "none";
-    if (activities & HealthActivityRun) activity = "running";
-    else if (activities & HealthActivityWalk) activity = "walking";
-    else if (activities & HealthActivityOpenWorkout) activity = "workout";
-    else if (activities & HealthActivityRestfulSleep) activity = "restful sleep";
-    else if (activities & HealthActivitySleep) activity = "sleeping";
-    used = strlen(health_text);
-    snprintf(health_text + used, sizeof(health_text) - used, "current_activity=%s.", activity);
   }
 
   DictionaryIterator *iter;
