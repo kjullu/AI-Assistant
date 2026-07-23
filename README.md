@@ -24,6 +24,7 @@ Open the app settings in the Pebble phone app and set:
 
 - `OpenRouter API Key`: your OpenRouter key, usually `sk-or-v1-...`.
 - `Model`: any OpenRouter model id, default `moonshotai/kimi-k2.5`.
+- `Reasoning`: model default, disabled, or one of the effort levels advertised by OpenRouter for the saved model. Reasoning output is hidden from the watch.
 
 Search and scraping require their own Brave Search and Firecrawl API keys. Tools can also be toggled from the watch.
 
