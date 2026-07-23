@@ -5,6 +5,7 @@ var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
 
 var OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 var OPENROUTER_CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
+var OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models';
 var BRAVE_SEARCH_URL = 'https://api.search.brave.com/res/v1/web/search';
 var FIRECRAWL_SCRAPE_URL = 'https://api.firecrawl.dev/v1/scrape';
 var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
@@ -45,6 +46,7 @@ var MAX_TOOL_ROUNDS = 5;
 var MAX_PARALLEL_TOOLS = 3;
 var MAX_SEND_ATTEMPTS = 3;
 var CURRENCY_CACHE_MS = 12 * 60 * 60 * 1000;
+var REASONING_CAPABILITY_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 
 var conversationHistory = [];
 var activeSessionCreatedAt = null;
@@ -230,6 +232,157 @@ function getSetting(key, fallback) {
 function getBoolSetting(key, fallback) {
   var value = getSetting(key, fallback ? '1' : '0');
   return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+function normalizedModelId(model) {
+  return String(model || DEFAULT_MODEL).replace(/:(free|nitro|floor|exacto)$/i, '');
+}
+
+function modelSupportsReasoning(modelInfo) {
+  if (!modelInfo) return false;
+  if (modelInfo.reasoning) return true;
+  var parameters = modelInfo.supported_parameters || [];
+  return parameters.indexOf('reasoning') !== -1 || parameters.indexOf('reasoning_effort') !== -1;
+}
+
+function reasoningOptionsForModel(modelInfo) {
+  var reasoning = modelInfo && modelInfo.reasoning;
+  var options = [{ label: 'Model default', value: 'default' }];
+  if (!modelSupportsReasoning(modelInfo)) {
+    return options;
+  }
+  if (!reasoning || !reasoning.mandatory) {
+    options.push({ label: 'Disabled', value: 'none' });
+  }
+  var efforts = reasoning && reasoning.supported_efforts;
+  if (efforts && efforts.length) {
+    for (var i = efforts.length - 1; i >= 0; i--) {
+      if (efforts[i] !== 'none') {
+        var effort = String(efforts[i]);
+        options.push({ label: effort.charAt(0).toUpperCase() + effort.substring(1), value: effort });
+      }
+    }
+  } else {
+    options.push({ label: 'Enabled (provider default)', value: 'enabled' });
+  }
+  return options;
+}
+
+function reasoningDescription(model, modelInfo) {
+  if (!modelInfo) {
+    return 'Could not load OpenRouter reasoning capabilities for ' + model + '. Reopen settings to retry.';
+  }
+  if (!modelSupportsReasoning(modelInfo)) {
+    return model + ' does not advertise reasoning support. Reopen settings after changing model.';
+  }
+  var reasoning = modelInfo.reasoning || {};
+  var efforts = reasoning.supported_efforts || [];
+  var text = efforts.length ? 'Supported levels: ' + efforts.slice().reverse().join(', ') + '.' :
+    'This model supports reasoning but does not advertise selectable levels.';
+  if (reasoning.default_effort) {
+    text += ' Default: ' + reasoning.default_effort + '.';
+  } else if (reasoning.default_enabled !== undefined) {
+    text += ' Default: ' + (reasoning.default_enabled ? 'enabled.' : 'disabled.');
+  }
+  if (reasoning.mandatory) {
+    text += ' Reasoning is required.';
+  }
+  return model + ': ' + text + ' Reasoning output is hidden. Reopen settings after changing model.';
+}
+
+function findClayItem(items, id) {
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].id === id) return items[i];
+    if (items[i].items) {
+      var found = findClayItem(items[i].items, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function configureReasoningSetting(model, modelInfo) {
+  var item = clay.config ? findClayItem(clay.config, 'reasoning-effort') : null;
+  if (!item) return;
+  item.options = reasoningOptionsForModel(modelInfo);
+  item.description = reasoningDescription(model, modelInfo);
+  var saved = getSetting('ReasoningEffort', 'default');
+  var available = item.options.some(function(option) { return option.value === saved; });
+  clay.setSettings('ReasoningEffort', available ? saved : 'default');
+}
+
+function reasoningCapabilityCacheKey(model) {
+  return 'ReasoningCapability:' + normalizedModelId(model);
+}
+
+function getCachedReasoningCapability(model, allowStale) {
+  try {
+    var cached = JSON.parse(localStorage.getItem(reasoningCapabilityCacheKey(model)) || 'null');
+    if (cached && (allowStale || Date.now() - cached.fetchedAt < REASONING_CAPABILITY_CACHE_MS)) {
+      return cached.model;
+    }
+  } catch (err) {
+  }
+  return null;
+}
+
+function fetchReasoningCapability(model, callback) {
+  var request = new XMLHttpRequest();
+  var finished = false;
+  function finish(modelInfo) {
+    if (finished) return;
+    finished = true;
+    callback(modelInfo);
+  }
+  request.open('GET', OPENROUTER_MODELS_URL, true);
+  request.setRequestHeader('Accept', 'application/json');
+  request.timeout = 12000;
+  request.onload = function() {
+    if (request.status < 200 || request.status >= 300) {
+      finish(getCachedReasoningCapability(model, true));
+      return;
+    }
+    try {
+      var json = JSON.parse(request.responseText);
+      var models = json.data || [];
+      var wanted = normalizedModelId(model);
+      var found = null;
+      for (var i = 0; i < models.length; i++) {
+        if (models[i].id === wanted) {
+          found = {
+            id: models[i].id,
+            reasoning: models[i].reasoning || null,
+            supported_parameters: models[i].supported_parameters || []
+          };
+          break;
+        }
+      }
+      if (found) {
+        localStorage.setItem(reasoningCapabilityCacheKey(model), JSON.stringify({
+          fetchedAt: Date.now(),
+          model: found
+        }));
+      }
+      finish(found || getCachedReasoningCapability(model, true));
+    } catch (err) {
+      finish(getCachedReasoningCapability(model, true));
+    }
+  };
+  request.onerror = function() { finish(getCachedReasoningCapability(model, true)); };
+  request.ontimeout = function() { finish(getCachedReasoningCapability(model, true)); };
+  request.send();
+}
+
+function applyReasoningSetting(payload) {
+  var effort = getSetting('ReasoningEffort', 'default');
+  if (effort === 'default') return payload;
+  payload.reasoning = { exclude: true };
+  if (effort === 'enabled') {
+    payload.reasoning.enabled = true;
+  } else {
+    payload.reasoning.effort = effort;
+  }
+  return payload;
 }
 
 function getScrapeAvailable() {
@@ -652,6 +805,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableChoice = settingValue(convertedSettings, rawSettings, 'EnableChoice', messageKeys.EnableChoice);
   var enableTimeline = settingValue(convertedSettings, rawSettings, 'EnableTimeline', messageKeys.EnableTimeline);
   var enableHealth = settingValue(convertedSettings, rawSettings, 'EnableHealth', messageKeys.EnableHealth);
+  var reasoningEffort = settingValue(convertedSettings, rawSettings, 'ReasoningEffort', messageKeys.ReasoningEffort);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
   var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
@@ -693,6 +847,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (enableHealth !== undefined) {
     localStorage.setItem('EnableHealth', String(enableHealth ? 1 : 0));
+  }
+  if (reasoningEffort !== undefined) {
+    localStorage.setItem('ReasoningEffort', String(reasoningEffort));
   }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());
@@ -1491,11 +1648,11 @@ function callModel(messages, generation, callback) {
     showError('OpenRouter timed out.', 'OpenRouter request timed out');
   };
 
-  request.send(JSON.stringify({
+  request.send(JSON.stringify(applyReasoningSetting({
     model: model,
     messages: messages,
     temperature: 0.2
-  }));
+  })));
 }
 
 function callModelStream(messages, generation, callback) {
@@ -1702,12 +1859,12 @@ function callModelStream(messages, generation, callback) {
     }
   }, STREAM_WATCHDOG_MS);
 
-  request.send(JSON.stringify({
+  request.send(JSON.stringify(applyReasoningSetting({
     model: model,
     messages: messages,
     temperature: 0.2,
     stream: true
-  }));
+  })));
 }
 
 function braveSearch(query, generation, callback) {
@@ -2378,7 +2535,8 @@ Pebble.addEventListener('appmessage', function(e) {
   }
 });
 
-Pebble.addEventListener('showConfiguration', function() {
+function openConfiguration(model, reasoningInfo) {
+  configureReasoningSetting(model, reasoningInfo);
   var stats = getMonthlyStats();
   clay.setSettings({
     NotesMemoryText: notesToText(),
@@ -2388,7 +2546,7 @@ Pebble.addEventListener('showConfiguration', function() {
     StatsSearches: String(stats.searches || 0),
     ExtraSystemPrompt: getSetting('ExtraSystemPrompt', ''),
     OpenRouterApiKey: getSetting('OpenRouterApiKey', ''),
-    OpenRouterModel: getSetting('OpenRouterModel', DEFAULT_MODEL),
+    OpenRouterModel: model,
     EnableLocation: getBoolSetting('EnableLocation', false),
     EnableMemory: getBoolSetting('EnableMemory', true),
     EnableCalculator: getBoolSetting('EnableCalculator', true),
@@ -2403,6 +2561,19 @@ Pebble.addEventListener('showConfiguration', function() {
     DebugLog: localStorage.getItem('DebugLog') || ''
   });
   Pebble.openURL(clay.generateUrl());
+}
+
+Pebble.addEventListener('showConfiguration', function() {
+  var model = getSetting('OpenRouterModel', DEFAULT_MODEL);
+  var cached = getCachedReasoningCapability(model, true);
+  if (cached) {
+    openConfiguration(model, cached);
+    fetchReasoningCapability(model, function() {});
+  } else {
+    fetchReasoningCapability(model, function(reasoningInfo) {
+      openConfiguration(model, reasoningInfo);
+    });
+  }
 });
 
 Pebble.addEventListener('webviewclosed', function(e) {
