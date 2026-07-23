@@ -30,6 +30,24 @@ module.exports = [
         "attributes": {
           "placeholder": "moonshotai/kimi-k2.5"
         }
+      },
+      {
+        "type": "select",
+        "id": "reasoning-effort",
+        "messageKey": "ReasoningEffort",
+        "defaultValue": "default",
+        "label": "Reasoning",
+        "description": "OpenRouter capabilities for the saved model are loaded when settings open.",
+        "options": [
+          { "label": "Model default", "value": "default" },
+          { "label": "Enabled", "value": "enabled" },
+          { "label": "Disabled", "value": "none" },
+          { "label": "Minimal", "value": "minimal" },
+          { "label": "Low", "value": "low" },
+          { "label": "Medium", "value": "medium" },
+          { "label": "High", "value": "high" },
+          { "label": "Maximum", "value": "max" }
+        ]
       }
     ]
   },

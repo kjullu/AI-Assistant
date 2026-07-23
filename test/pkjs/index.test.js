@@ -14,7 +14,7 @@ function createRuntime(settings = {}) {
   const storage = new Map(Object.entries({ OpenRouterApiKey: 'test-key', ...settings }));
   let sendHandler = (dict, success) => success();
 
-  function Clay() {}
+  function Clay(config) { this.config = config; }
   Clay.prototype.setSettings = function() {};
   Clay.prototype.generateUrl = function() { return 'https://config.invalid'; };
   Clay.prototype.getSettings = function() { return {}; };
@@ -130,6 +130,38 @@ test('final answers stream as plain text without a JSON wrapper', () => {
 
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Hello from Pebble.'));
   assert.match(runtime.context.buildSystemPrompt(), /final watch-friendly answer as plain text/);
+});
+
+test('configured reasoning effort is sent but excluded from output', () => {
+  const runtime = createRuntime({ ReasoningEffort: 'low' });
+  prompt(runtime, 'Think briefly');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.deepEqual(body.reasoning, { effort: 'low', exclude: true });
+});
+
+test('model default omits the reasoning request parameter', () => {
+  const runtime = createRuntime({ ReasoningEffort: 'default' });
+  prompt(runtime, 'Use defaults');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.equal(body.reasoning, undefined);
+});
+
+test('reasoning options follow OpenRouter model capabilities', () => {
+  const runtime = createRuntime();
+  const gemini = {
+    reasoning: {
+      default_effort: 'medium',
+      mandatory: false,
+      supported_efforts: ['high', 'medium', 'low', 'minimal']
+    },
+    supported_parameters: ['reasoning', 'reasoning_effort']
+  };
+  const options = JSON.parse(JSON.stringify(runtime.context.reasoningOptionsForModel(gemini)));
+  assert.deepEqual(options.map(option => option.value), ['default', 'none', 'minimal', 'low', 'medium', 'high']);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(runtime.context.reasoningOptionsForModel({ supported_parameters: [] }))),
+    [{ label: 'Model default', value: 'default' }]
+  );
 });
 
 test('calculator fetches and caches current currency rates', () => {

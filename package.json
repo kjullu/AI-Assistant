@@ -76,7 +76,8 @@
       "ToggleHealth",
       "EnableHealth",
       "HealthRequest",
-      "HealthData"
+      "HealthData",
+      "ReasoningEffort"
     ],
     "resources": {
       "media": []
