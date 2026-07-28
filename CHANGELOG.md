@@ -1,4 +1,6 @@
-# 0.3.0-DEV - NOT OUT YET
+# 0.3.1-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
+
+# 0.3.0
 
 - Add a choice tool with watch-based navigation, cancellation, and dictation for custom answers.
 - Add an opt-in Firecrawl tool for scraping readable content from web pages.
