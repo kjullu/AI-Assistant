@@ -1,24 +1,20 @@
 # 0.3.0-DEV - NOT OUT YET
 
-- Add choice tool for presenting multiple-choice questions on the watch with UP/DOWN to navigate, SELECT to pick, BACK to cancel, and a "Say your own" option that opens dictation.
-- Weather tool can now accept location instead of just city.
-- Only include tool explanations and JSON fields in the system prompt when the tool is enabled.
-- Convert location from system prompt to an actual tool that the model can request.
-- Make location lookup fail gracefully by returning an error message to the model instead of halting.
-- Add repeated, ordered tool-call rounds with parallel execution for independent calls.
-- Add request IDs to prevent cancelled response chunks from reaching newer conversations.
-- Add bounded AppMessage retries and preserve queued messages during cancellation.
-- Fix streaming fallback tool calls and stale choice continuations.
+- Add a choice tool with watch-based navigation, cancellation, and dictation for custom answers.
+- Add an opt-in Firecrawl tool for scraping readable content from web pages.
+- Support weather lookups using locations instead of only city names.
+- Convert location lookup into an on-demand tool and return failures to the model without halting.
+- Include tool instructions and JSON fields in the system prompt only when each tool is enabled.
+- Support repeated, ordered tool-call rounds with parallel execution and streaming fallback handling.
+- Improve cancellation and message delivery with request IDs, bounded retries, preserved queues, and stale-choice protection.
 - Add a Timeline toggle to phone and watch settings.
-- Update one saved session record per conversation instead of saving every turn as a new session.
-- Fetch current currency rates from Frankfurter and reject conversions between incompatible unit types.
-- Remove conversation content, queries, and URLs from persistent debug logs.
-- Add focused regression tests for request, tool, choice, session, and queue behavior.
-- Update privacy and control documentation.
-- Fix tool-setting navigation keeping selected rows off-screen or behind the scroll indicator.
-- Add an opt-in Health tool for querying watch-recorded activity, sleep, calorie, and average/minimum/maximum heart-rate data over inclusive date ranges.
-- Output final assistant answers as plain text while reserving JSON for tool requests.
-- Add a model-aware reasoning setting using capabilities reported by OpenRouter.
+- Update one saved session record per conversation instead of creating one for every turn.
+- Fetch current currency rates from Frankfurter and reject incompatible unit conversions.
+- Protect privacy by removing conversation content, queries, and URLs from persistent logs and updating related documentation.
+- Fix tool-setting navigation that could leave selected rows off-screen or behind the scroll indicator.
+- Add an opt-in Health tool for activity, sleep, calorie, and heart-rate data over inclusive date ranges.
+- Return final assistant answers as plain text while reserving JSON for tool requests.
+- Add model-aware reasoning controls using capabilities reported by OpenRouter.
 
 # Changelog 0.2.0
 
