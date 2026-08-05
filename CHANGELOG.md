@@ -1,5 +1,7 @@
 # 0.3.1-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
 
+- Return tool results to the model with standard tool roles and matching call IDs instead of user messages.
+
 # 0.3.0
 
 - Add a choice tool with watch-based navigation, cancellation, and dictation for custom answers.
