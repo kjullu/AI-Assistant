@@ -2,6 +2,8 @@
 
 - Require confirmation before clearing a conversation, with a safe return to the existing chat.
 - Start dictation automatically after confirming a new session.
+- Show each tool call on its own line in the watch conversation before the final response.
+- Preserve tool calls and results as context for later conversation turns.
 
 # 0.3.1
 - Return tool results to the model with standard tool roles and matching call IDs instead of user messages.

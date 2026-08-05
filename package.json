@@ -77,7 +77,8 @@
       "EnableHealth",
       "HealthRequest",
       "HealthData",
-      "ReasoningEffort"
+      "ReasoningEffort",
+      "ToolActivity"
     ],
     "resources": {
       "media": []

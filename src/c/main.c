@@ -34,6 +34,7 @@
 #define RESPONSE_BUFFER_SIZE 6144
 #define CHAT_HISTORY_BUFFER_SIZE 14000
 #define STATS_BUFFER_SIZE 512
+#define TOOL_HISTORY_PREFIX "[tool] "
 
 // Pointers to Pebble UI/session objects created at runtime.
 static Window *s_window;
@@ -707,6 +708,17 @@ static void append_chat_history(const char *text) {
   }
 }
 
+static void append_tool_activity_to_history(const char *tool) {
+  if (!tool || !tool[0] || !s_current_ai_response_start) {
+    return;
+  }
+  append_chat_history(TOOL_HISTORY_PREFIX);
+  append_chat_history(tool);
+  append_chat_history("\n");
+  s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
+  s_response_started = false;
+}
+
 //AI: Configure a small label layer like Bobby's speaker labels.
 static void configure_label_layer(TextLayer *layer, const char *text) {
   text_layer_set_text(layer, text);
@@ -812,6 +824,10 @@ static bool is_history_label(const char *line) {
   return strcmp(line, "You") == 0 || strcmp(line, "AI") == 0 || strcmp(line, "Error") == 0;
 }
 
+static bool is_tool_history_line(const char *line) {
+  return strncmp(line, TOOL_HISTORY_PREFIX, strlen(TOOL_HISTORY_PREFIX)) == 0;
+}
+
 static GColor history_label_color(const char *line) {
   if (strcmp(line, "You") == 0) {
     return ACCENT_USER;
@@ -825,6 +841,7 @@ static GColor history_label_color(const char *line) {
 //AI: Measure or draw the transcript turn by turn with colored speaker badges and dividers.
 static int16_t layout_history_text(GContext *ctx, GRect bounds, bool draw) {
   GFont badge_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  GFont tool_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
   int16_t width = bounds.size.w;
   int16_t y = 0;
@@ -838,8 +855,17 @@ static int16_t layout_history_text(GContext *ctx, GRect bounds, bool draw) {
     }
 
     if (line[0] != '\0') {
-      bool is_label = is_history_label(line);
-      if (is_label) {
+      if (is_tool_history_line(line)) {
+        const char *tool = line + strlen(TOOL_HISTORY_PREFIX);
+        int16_t tool_h = measure_text_height(tool, tool_font, width - (PADDING * 2));
+        if (draw) {
+          graphics_context_set_text_color(ctx, COLOR_DIM);
+          graphics_draw_text(ctx, tool, tool_font,
+                             GRect(PADDING, y, width - (PADDING * 2), tool_h + 2),
+                             GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+        }
+        y += tool_h + PADDING;
+      } else if (is_history_label(line)) {
         if (!first_turn) {
           if (strcmp(line, "You") == 0) {
             draw_divider(ctx, PADDING, y + 1, width - (PADDING * 2), COLOR_DIM, draw);
@@ -1235,6 +1261,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_Error);
   Tuple *request_id_tuple = dict_find(iter, MESSAGE_KEY_RequestId);
   Tuple *health_request_tuple = dict_find(iter, MESSAGE_KEY_HealthRequest);
+  Tuple *tool_activity_tuple = dict_find(iter, MESSAGE_KEY_ToolActivity);
 
   // Responses from a cancelled or replaced turn must not leak into the current transcript.
   if (request_id_tuple && request_id_tuple->value->uint32 != s_active_request_id) {
@@ -1246,6 +1273,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 
   if (health_request_tuple && request_id_tuple) {
     send_health_data(health_request_tuple->value->cstring, request_id_tuple->value->uint32);
+  }
+
+  if (tool_activity_tuple) {
+    append_tool_activity_to_history(tool_activity_tuple->value->cstring);
   }
 
   //USR: Default status to Ready. if status_tuple- is set, then use that for status (as a string?)
