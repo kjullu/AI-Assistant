@@ -12,6 +12,7 @@
 #define KNOB_SIZE 8
 #define DIVIDER_GAP 6
 #define SETTINGS_SCROLL_MARGIN 10
+#define HOME_STATS_GAP 5
 
 #ifdef PBL_COLOR
 #define ACCENT_AI     GColorCobaltBlue
@@ -697,7 +698,7 @@ static void home_layer_update_proc(Layer *layer, GContext *ctx) {
   y += title_h + 3;
 
   draw_divider(ctx, PADDING, y, text_width, ACCENT_AI, true);
-  y += DIVIDER_GAP + PADDING;
+  y += HOME_STATS_GAP;
 
   const char *stats = s_stats_text[0] ? s_stats_text : "Loading stats...";
   graphics_context_set_text_color(ctx, GColorBlack);
@@ -866,7 +867,7 @@ static void layout_chat(bool scroll_to_bottom) {
                                                              GTextOverflowModeWordWrap, GTextAlignmentLeft);
     int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions",
                                          fonts_get_system_font(FONT_KEY_GOTHIC_14), text_width);
-    int16_t home_height = PADDING + (title_h + 3) + DIVIDER_GAP + PADDING + stats_size.h + PADDING + hint_h + PADDING;
+    int16_t home_height = PADDING + (title_h + 3) + HOME_STATS_GAP + stats_size.h + PADDING + hint_h + PADDING;
     content_height = home_height > bounds.size.h ? home_height : bounds.size.h;
     layer_set_frame(s_home_layer, GRect(0, 0, width, content_height));
     layer_mark_dirty(s_home_layer);
