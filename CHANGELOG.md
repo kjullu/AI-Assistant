@@ -5,6 +5,7 @@
 - Fix tool and choice navigation keeping selected rows or their context headers off-screen.
 - Show submitted choice questions and answers in the watch conversation.
 - Simplify Pebble Time and Pebble 2 home statistics while keeping full details on Pebble Time 2.
+- Clarify Home Stats platform visibility and automatic monthly resets in phone settings.
 
 # 0.3.0
 
