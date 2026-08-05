@@ -46,6 +46,7 @@ static TextLayer *s_assistant_label_layer;
 static TextLayer *s_assistant_layer;
 static Layer *s_history_layer;
 static Layer *s_home_layer;
+static Layer *s_new_session_layer;
 static TextLayer *s_status_message_layer;
 static Layer *s_sessions_layer;
 static Layer *s_settings_layer;
@@ -63,10 +64,16 @@ static bool s_start_dictation_on_appear;
 static bool s_show_home = true;
 static bool s_request_active;
 static bool s_cancel_pending;
+static bool s_clear_session_pending;
 static uint32_t s_active_request_id;
 static bool s_response_started;
 static bool s_show_settings;
 static bool s_show_sessions;
+static bool s_show_new_session;
+static bool s_new_session_return_home;
+static bool s_new_session_return_settings;
+static bool s_new_session_return_sessions;
+static int s_new_session_selection;
 static bool s_settings_return_home;
 static int s_settings_selection;
 static bool s_location_enabled;
@@ -649,10 +656,46 @@ static void clear_watch_session(void) {
   s_chat_history[0] = '\0';
   s_current_ai_response_start = NULL;
   s_show_home = true;
+  s_show_settings = false;
+  s_show_sessions = false;
+  s_show_new_session = false;
   s_request_active = false;
   s_response_started = false;
   vibes_short_pulse();
-  update_display("New session");
+  update_display("Ready");
+}
+
+static void close_new_session_screen(void) {
+  s_show_new_session = false;
+  s_show_home = s_new_session_return_home;
+  s_show_settings = s_new_session_return_settings;
+  s_show_sessions = s_new_session_return_sessions;
+}
+
+static void open_new_session_screen(void) {
+  s_new_session_return_home = s_show_home;
+  s_new_session_return_settings = s_show_settings;
+  s_new_session_return_sessions = s_show_sessions;
+  s_show_new_session = true;
+  s_new_session_selection = 1;
+  s_show_home = false;
+  s_show_settings = false;
+  s_show_sessions = false;
+  update_display("Ready");
+}
+
+static void cancel_new_session_screen(void) {
+  close_new_session_screen();
+  update_display("Ready");
+}
+
+static void confirm_new_session(void) {
+  close_new_session_screen();
+  if (!send_simple_command(MESSAGE_KEY_ClearSession, "Clear failed")) {
+    return;
+  }
+  s_clear_session_pending = true;
+  update_display("Starting new...");
 }
 
 //AI: Append text to the session transcript without overflowing the fixed buffer.
@@ -713,6 +756,55 @@ static void home_layer_update_proc(Layer *layer, GContext *ctx) {
                        GRect(PADDING, hint_y, text_width, hint_h + 2),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
   }
+}
+
+static void new_session_layer_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  int16_t width = bounds.size.w;
+  GFont title_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  int16_t title_h = measure_text_height("New session?", title_font, width - (PADDING * 2));
+  int16_t header_h = title_h + (PADDING * 2);
+
+  graphics_context_set_fill_color(ctx, ACCENT_AI);
+  graphics_fill_rect(ctx, GRect(0, 0, width, header_h), 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, "New session?", title_font,
+                     GRect(PADDING, PADDING, width - (PADDING * 2), title_h + 2),
+                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+
+  const char *options[] = { "Back", "Start new" };
+  int16_t hint_h = measure_text_height("SELECT choose", hint_font, width - (PADDING * 2));
+  int16_t hint_y = bounds.size.h - hint_h - PADDING;
+  int16_t group_h = (ROW_HEIGHT * 2) + PADDING + 18;
+  int16_t y = header_h + (hint_y - header_h - group_h) / 2;
+  for (int i = 0; i < 2; i++) {
+    bool selected = i == s_new_session_selection;
+    GColor fill = i == 0 ? GColorLightGray : GColorMediumAquamarine;
+    GColor text = i == 0 ? GColorDarkGray : ACCENT_AI;
+    if (selected) {
+      graphics_context_set_fill_color(ctx, fill);
+      graphics_fill_rect(ctx, GRect(0, y, width, ROW_HEIGHT), 0, GCornerNone);
+    }
+    graphics_context_set_text_color(ctx, text);
+    graphics_draw_text(ctx, options[i], option_font,
+                       GRect(PADDING, y + 3, width - (PADDING * 2), ROW_HEIGHT),
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+    y += ROW_HEIGHT;
+  }
+
+  y += PADDING;
+  graphics_context_set_text_color(ctx, COLOR_DIM);
+  graphics_draw_text(ctx, s_new_session_selection == 0 ? "Goes back to chat" : "Clears current chat", body_font,
+                     GRect(PADDING, y, width - (PADDING * 2), 18),
+                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+
+  graphics_context_set_text_color(ctx, COLOR_DIM);
+  graphics_draw_text(ctx, "SELECT choose", hint_font,
+                     GRect(PADDING, hint_y, width - (PADDING * 2), hint_h + 2),
+                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
 }
 
 //AI: Return true for transcript speaker-name lines that should be drawn in bold.
@@ -814,10 +906,12 @@ static void layout_chat(bool scroll_to_bottom) {
 
   bool has_response = s_assistant_response[0] != '\0';
   bool has_history = s_chat_history[0] != '\0';
-  bool show_status_message = strcmp(s_status_text, "Ready") != 0 && strcmp(s_status_text, "Done") != 0 && !has_response;
+  bool show_status_message = strcmp(s_status_text, "Ready") != 0 && strcmp(s_status_text, "Done") != 0 &&
+                              strcmp(s_status_text, "New session") != 0 && !s_show_new_session && !has_response;
 
-  layer_set_hidden(s_home_layer, s_show_settings || s_show_sessions || !s_show_home || show_status_message);
-  layer_set_hidden(s_history_layer, s_show_settings || s_show_sessions || s_show_home || !has_history);
+  layer_set_hidden(s_home_layer, s_show_settings || s_show_sessions || !s_show_home || show_status_message || s_show_new_session);
+  layer_set_hidden(s_new_session_layer, !s_show_new_session);
+  layer_set_hidden(s_history_layer, s_show_settings || s_show_sessions || s_show_home || !has_history || s_show_new_session);
   layer_set_hidden(s_settings_layer, !s_show_settings);
   layer_set_hidden(s_sessions_layer, !s_show_sessions);
   layer_set_hidden(s_choice_layer, !s_show_choice);
@@ -841,7 +935,7 @@ static void layout_chat(bool scroll_to_bottom) {
     y += sessions_height;
   }
 
-  if (!s_show_settings && !s_show_sessions && !s_show_home && has_history) {
+  if (!s_show_settings && !s_show_sessions && !s_show_new_session && !s_show_home && has_history) {
     int16_t history_height = layout_history_text(NULL, GRect(0, 0, width, TEXT_MEASURE_HEIGHT), false);
     layer_set_frame(s_history_layer, GRect(0, y, width, history_height));
     layer_mark_dirty(s_history_layer);
@@ -859,7 +953,11 @@ static void layout_chat(bool scroll_to_bottom) {
   }
 
   int16_t content_height;
-  if (s_show_settings || s_show_sessions || (!s_show_home && has_history) || show_status_message) {
+  if (s_show_new_session) {
+    content_height = bounds.size.h;
+    layer_set_frame(s_new_session_layer, GRect(0, 0, width, content_height));
+    layer_mark_dirty(s_new_session_layer);
+  } else if (s_show_settings || s_show_sessions || (!s_show_home && has_history) || show_status_message) {
     content_height = y + PADDING;
   } else {
     int16_t text_width = width - (PADDING * 2);
@@ -878,7 +976,9 @@ static void layout_chat(bool scroll_to_bottom) {
   }
   scroll_layer_set_content_size(s_scroll_layer, GSize(width, content_height));
 
-  if (s_show_settings && content_height > bounds.size.h) {
+  if (s_show_new_session) {
+    scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
+  } else if (s_show_settings && content_height > bounds.size.h) {
     GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
     if (s_settings_selection == 0) {
       offset.y = 0;
@@ -1305,6 +1405,10 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
     s_request_active = true;
     update_display("Cancel failed");
     vibes_double_pulse();
+  } else if (dict_find(iter, MESSAGE_KEY_ClearSession)) {
+    s_clear_session_pending = false;
+    update_display("Clear failed");
+    vibes_double_pulse();
   }
 }
 
@@ -1316,6 +1420,14 @@ static void outbox_sent_callback(DictionaryIterator *iter, void *context) {
       s_active_request_id = 1;
     }
     update_display("Cancelled");
+  } else if (dict_find(iter, MESSAGE_KEY_ClearSession) && s_clear_session_pending) {
+    s_clear_session_pending = false;
+    clear_watch_session();
+    s_active_request_id++;
+    if (s_active_request_id == 0) {
+      s_active_request_id = 1;
+    }
+    dictation_session_start(s_dictation_session);
   }
 }
 
@@ -1369,6 +1481,15 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
 
 // SELECT is the only app-specific button action; UP/DOWN are kept for scrolling.
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_new_session) {
+    if (s_new_session_selection == 0) {
+      cancel_new_session_screen();
+    } else {
+      confirm_new_session();
+    }
+    return;
+  }
+
   if (s_show_choice) {
     if (s_choice_selection >= 0 && s_choice_selection < s_choice_option_count) {
       if (strcmp(s_choice_options[s_choice_selection], "Say your own") == 0) {
@@ -1391,19 +1512,18 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice) {
+  if (s_show_choice || s_show_new_session) {
     return;
   }
-  clear_watch_session();
-
-  send_simple_command(MESSAGE_KEY_ClearSession, "Cleared watch only");
-  s_active_request_id++;
-  if (s_active_request_id == 0) {
-    s_active_request_id = 1;
-  }
+  open_new_session_screen();
 }
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_new_session) {
+    cancel_new_session_screen();
+    return;
+  }
+
   if (s_show_choice) {
     DictionaryIterator *iter;
     AppMessageResult result = app_message_outbox_begin(&iter);
@@ -1450,20 +1570,26 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void up_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice) {
+  if (s_show_choice || s_show_new_session) {
     return;
   }
   open_settings_screen();
 }
 
 static void down_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice) {
+  if (s_show_choice || s_show_new_session) {
     return;
   }
   open_sessions_screen();
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_new_session) {
+    s_new_session_selection = 0;
+    layer_mark_dirty(s_new_session_layer);
+    return;
+  }
+
   if (s_show_choice) {
     s_choice_selection = (s_choice_selection + s_choice_option_count - 1) % s_choice_option_count;
     scroll_choice_selection_into_view();
@@ -1484,6 +1610,12 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_show_new_session) {
+    s_new_session_selection = 1;
+    layer_mark_dirty(s_new_session_layer);
+    return;
+  }
+
   if (s_show_choice) {
     s_choice_selection = (s_choice_selection + 1) % s_choice_option_count;
     scroll_choice_selection_into_view();
@@ -1649,6 +1781,10 @@ static void window_load(Window *window) {
   layer_set_update_proc(s_home_layer, home_layer_update_proc);
   scroll_layer_add_child(s_scroll_layer, s_home_layer);
 
+  s_new_session_layer = layer_create(GRectZero);
+  layer_set_update_proc(s_new_session_layer, new_session_layer_update_proc);
+  scroll_layer_add_child(s_scroll_layer, s_new_session_layer);
+
   s_status_message_layer = text_layer_create(GRectZero);
   configure_message_layer(s_status_message_layer);
   text_layer_set_text_color(s_status_message_layer, GColorDarkGray);
@@ -1701,6 +1837,7 @@ static void window_unload(Window *window) {
   text_layer_destroy(s_assistant_layer);
   layer_destroy(s_history_layer);
   layer_destroy(s_home_layer);
+  layer_destroy(s_new_session_layer);
   text_layer_destroy(s_status_message_layer);
   layer_destroy(s_settings_layer);
   layer_destroy(s_sessions_layer);
