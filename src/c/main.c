@@ -1220,7 +1220,19 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   }
 
   if (stats_tuple) {
+#ifdef PBL_PLATFORM_EMERY
     snprintf(s_stats_text, sizeof(s_stats_text), "%s", stats_tuple->value->cstring);
+#else
+    const char *stats = stats_tuple->value->cstring;
+    const char *first_line_end = strchr(stats, '\n');
+    const char *second_line_end = first_line_end ? strchr(first_line_end + 1, '\n') : NULL;
+    size_t stats_length = second_line_end ? (size_t)(second_line_end - stats) : strlen(stats);
+    if (stats_length >= sizeof(s_stats_text)) {
+      stats_length = sizeof(s_stats_text) - 1;
+    }
+    memcpy(s_stats_text, stats, stats_length);
+    s_stats_text[stats_length] = '\0';
+#endif
     layer_mark_dirty(s_home_layer);
   }
 
