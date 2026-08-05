@@ -1,6 +1,7 @@
 # 0.3.1-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
 
 - Return tool results to the model with standard tool roles and matching call IDs instead of user messages.
+- Remove the touchscreen hold gesture for clearing conversations to prevent accidental activation.
 
 # 0.3.0
 
