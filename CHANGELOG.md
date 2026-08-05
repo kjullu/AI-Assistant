@@ -2,6 +2,7 @@
 
 - Return tool results to the model with standard tool roles and matching call IDs instead of user messages.
 - Remove the touchscreen hold gesture for clearing conversations to prevent accidental activation.
+- Fix choice navigation keeping the selected option off-screen.
 
 # 0.3.0
 

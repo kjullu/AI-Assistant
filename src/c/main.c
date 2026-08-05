@@ -88,6 +88,7 @@ static char s_choice_question[MAX_CHOICE_TEXT];
 static char s_choice_options[MAX_CHOICE_OPTIONS][MAX_CHOICE_TEXT];
 static int s_choice_option_count;
 static int s_choice_selection;
+static int16_t s_choice_scroll_offset;
 static char s_choice_answer_buffer[MAX_CHOICE_TEXT + 8];
 static bool s_choice_waiting_dictation;
 static Layer *s_choice_layer;
@@ -419,6 +420,7 @@ static void close_choice_screen(void) {
   s_choice_question[0] = '\0';
   s_choice_option_count = 0;
   s_choice_selection = 0;
+  s_choice_scroll_offset = 0;
   layer_set_hidden(s_choice_layer, true);
   update_display("Ready");
 }
@@ -456,6 +458,7 @@ static void open_choice_screen(const char *question, const char *options_text) {
   s_choice_question[0] = '\0';
   s_choice_option_count = 0;
   s_choice_selection = 0;
+  s_choice_scroll_offset = 0;
 
   if (question) {
     snprintf(s_choice_question, sizeof(s_choice_question), "%s", question);
@@ -502,7 +505,7 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
   int16_t width = bounds.size.w;
-  int16_t y = PADDING;
+  int16_t y = PADDING + s_choice_scroll_offset;
 
   // Question header background
   int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question", question_font, width - (PADDING * 2));
@@ -554,6 +557,42 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   y += 20 + PADDING * 2;
 
   return y;
+}
+
+static void scroll_choice_selection_into_view(void) {
+  GRect bounds = layer_get_bounds(s_choice_layer);
+  GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  int16_t width = bounds.size.w;
+  int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question",
+                                           question_font, width - (PADDING * 2));
+  if (question_h < 20) {
+    question_h = 20;
+  }
+
+  int16_t row_top = PADDING + question_h + (PADDING * 2) + DIVIDER_GAP;
+  int16_t row_bottom = row_top;
+  for (int i = 0; i <= s_choice_selection && i < s_choice_option_count; i++) {
+    int16_t option_h = measure_text_height(s_choice_options[i], option_font, width - (PADDING * 4));
+    if (option_h < ROW_HEIGHT) {
+      option_h = ROW_HEIGHT;
+    }
+    row_bottom = row_top + option_h;
+    if (i < s_choice_selection) {
+      row_top = row_bottom;
+    }
+  }
+
+  int16_t visible_top = -s_choice_scroll_offset + SETTINGS_SCROLL_MARGIN;
+  int16_t visible_bottom = -s_choice_scroll_offset + bounds.size.h - SETTINGS_SCROLL_MARGIN;
+  if (row_top < visible_top) {
+    s_choice_scroll_offset = SETTINGS_SCROLL_MARGIN - row_top;
+  } else if (row_bottom > visible_bottom) {
+    s_choice_scroll_offset = bounds.size.h - SETTINGS_SCROLL_MARGIN - row_bottom;
+  }
+  if (s_choice_scroll_offset > 0) {
+    s_choice_scroll_offset = 0;
+  }
 }
 
 static void choice_layer_update_proc(Layer *layer, GContext *ctx) {
@@ -1370,6 +1409,7 @@ static void down_long_click_handler(ClickRecognizerRef recognizer, void *context
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_show_choice) {
     s_choice_selection = (s_choice_selection + s_choice_option_count - 1) % s_choice_option_count;
+    scroll_choice_selection_into_view();
     layer_mark_dirty(s_choice_layer);
     return;
   }
@@ -1389,6 +1429,7 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_show_choice) {
     s_choice_selection = (s_choice_selection + 1) % s_choice_option_count;
+    scroll_choice_selection_into_view();
     layer_mark_dirty(s_choice_layer);
     return;
   }
