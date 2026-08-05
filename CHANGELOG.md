@@ -1,5 +1,9 @@
-# 0.3.1-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
+# 0.3.2-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
 
+- Require confirmation before clearing a conversation, with a safe return to the existing chat.
+- Start dictation automatically after confirming a new session.
+
+# 0.3.1
 - Return tool results to the model with standard tool roles and matching call IDs instead of user messages.
 - Remove the touchscreen hold gesture for clearing conversations to prevent accidental activation.
 - Fix tool and choice navigation keeping selected rows or their context headers off-screen.
