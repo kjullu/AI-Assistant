@@ -1225,12 +1225,21 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 #else
     const char *stats = stats_tuple->value->cstring;
     const char *first_line_end = strchr(stats, '\n');
-    const char *second_line_end = first_line_end ? strchr(first_line_end + 1, '\n') : NULL;
-    size_t stats_length = second_line_end ? (size_t)(second_line_end - stats) : strlen(stats);
+    const char *stats_start = first_line_end ? first_line_end + 1 : stats;
+    const char *stats_end = stats_start;
+    for (int line = 0; line < 3; line++) {
+      const char *line_end = strchr(stats_end, '\n');
+      if (!line_end) {
+        stats_end = stats + strlen(stats);
+        break;
+      }
+      stats_end = line_end + (line < 2 ? 1 : 0);
+    }
+    size_t stats_length = (size_t)(stats_end - stats_start);
     if (stats_length >= sizeof(s_stats_text)) {
       stats_length = sizeof(s_stats_text) - 1;
     }
-    memcpy(s_stats_text, stats, stats_length);
+    memcpy(s_stats_text, stats_start, stats_length);
     s_stats_text[stats_length] = '\0';
 #endif
     layer_mark_dirty(s_home_layer);
