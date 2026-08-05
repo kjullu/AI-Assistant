@@ -11,6 +11,7 @@ The app targets the `basalt`, `diorite`, and `emery` Pebble platforms.
 - Keeps recent turns as conversation context and stores up to 20 conversations locally on the phone.
 - Shows the five most recent saved conversations on the watch.
 - Lets the model use enabled tools repeatedly, with independent calls executed in parallel when possible.
+- Shows every tool call as a separate activity line in the watch conversation before the final response.
 - Can add requested reminders and events to the user's Pebble timeline when Timeline is enabled.
 - Shows the remaining OpenRouter credit balance plus monthly message and search counts on every home screen. Pebble Time 2 also shows used credits and the selected model. Monthly counters reset at the start of each UTC month; the remaining credit balance does not.
 

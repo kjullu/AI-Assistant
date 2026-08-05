@@ -295,6 +295,11 @@ test('parallel scrape results retain requested order', () => {
     reply: ''
   });
 
+  assert.deepEqual(
+    runtime.sentMessages.filter(message => message.ToolActivity).map(message => message.ToolActivity),
+    ['Firecrawl Scrape tool', 'Firecrawl Scrape tool']
+  );
+
   const scrapes = runtime.requests.filter(request => request.url && request.url.includes('firecrawl'));
   assert.equal(scrapes.length, 2);
   scrapes[1].status = 200;
@@ -323,6 +328,25 @@ test('the same tool can run in consecutive rounds', () => {
   });
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'Four and six.' });
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Four and six.'));
+});
+
+test('completed tool calls and results are retained in the next turn', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'What is two plus two?', 1);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'calculator', arguments: { expression: '2+2' } }], reply: ''
+  });
+  streamTextResponse(modelRequests(runtime)[1], 'It is four.');
+
+  prompt(runtime, 'What did you calculate?', 2);
+  const nextTurn = JSON.parse(modelRequests(runtime)[2].body);
+  const assistantToolCall = nextTurn.messages.find(message => message.role === 'assistant' && message.tool_calls);
+  const toolResult = nextTurn.messages.find(message => message.role === 'tool');
+
+  assert.equal(assistantToolCall.tool_calls[0].function.name, 'calculator');
+  assert.equal(toolResult.tool_call_id, assistantToolCall.tool_calls[0].id);
+  assert.match(toolResult.content, /2\+2 = 4/);
+  assert.ok(nextTurn.messages.some(message => message.role === 'assistant' && message.content === 'It is four.'));
 });
 
 test('identical calls in one batch share one tool execution', () => {
