@@ -560,6 +560,11 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
 }
 
 static void scroll_choice_selection_into_view(void) {
+  if (s_choice_selection == 0) {
+    s_choice_scroll_offset = 0;
+    return;
+  }
+
   GRect bounds = layer_get_bounds(s_choice_layer);
   GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
@@ -857,6 +862,11 @@ static void layout_chat(bool scroll_to_bottom) {
 
   if (s_show_settings && content_height > bounds.size.h) {
     GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+    if (s_settings_selection == 0) {
+      offset.y = 0;
+      scroll_layer_set_content_offset(s_scroll_layer, offset, false);
+      return;
+    }
     int16_t row_top = (PADDING * 2) + LABEL_HEIGHT + 2 + DIVIDER_GAP +
                       (s_settings_selection * ROW_HEIGHT);
     int16_t row_bottom = row_top + ROW_HEIGHT;
