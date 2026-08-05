@@ -12,7 +12,7 @@ The app targets the `basalt`, `diorite`, and `emery` Pebble platforms.
 - Shows the five most recent saved conversations on the watch.
 - Lets the model use enabled tools repeatedly, with independent calls executed in parallel when possible.
 - Can add requested reminders and events to the user's Pebble timeline when Timeline is enabled.
-- Shows monthly message, search, and OpenRouter usage statistics plus the remaining OpenRouter credit balance on the home screen.
+- Shows OpenRouter usage and remaining credit balance on every home screen. Pebble Time 2 also shows monthly message and search counts plus the selected model.
 
 ## Watch Controls
 
