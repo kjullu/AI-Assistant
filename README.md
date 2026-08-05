@@ -55,9 +55,16 @@ Submitted choice questions and answers are added to the watch conversation befor
 
 These controls work outside choice prompts:
 
-- Hold `SELECT`: clear the current conversation and start a new session.
+- Hold `SELECT`: open the new-session confirmation screen.
 - Hold `UP`: open tool settings.
 - Hold `DOWN`: open saved conversations.
+
+### New Session Confirmation
+
+- `UP`: highlight `Back`.
+- `DOWN`: highlight `Start new`, which is selected by default and starts dictation after clearing the conversation.
+- `SELECT`: activate the highlighted option.
+- `BACK`: close the confirmation and return to the existing conversation without clearing it.
 
 On supported touchscreen models, swipe vertically to scroll long conversation and saved-conversation screens. There is no touchscreen hold action.
 
