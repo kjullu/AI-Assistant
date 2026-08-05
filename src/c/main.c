@@ -77,10 +77,6 @@ static bool s_choice_enabled = true;
 static bool s_timeline_enabled = true;
 static bool s_health_enabled;
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
-static AppTimer *s_touch_long_timer;
-static bool s_touch_long_fired;
-static bool s_touch_moved;
-static int16_t s_touch_start_y;
 static int16_t s_touch_last_y;
 #endif
 
@@ -1438,19 +1434,6 @@ static void toggle_selected_setting(void) {
 }
 
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
-static void touch_long_timer_callback(void *context) {
-  s_touch_long_timer = NULL;
-  if (!s_touch_moved) {
-    s_touch_long_fired = true;
-    clear_watch_session();
-    send_simple_command(MESSAGE_KEY_ClearSession, "Cleared watch only");
-    s_active_request_id++;
-    if (s_active_request_id == 0) {
-      s_active_request_id = 1;
-    }
-  }
-}
-
 static void scroll_by_delta(int16_t delta_y) {
   GSize content_size = scroll_layer_get_content_size(s_scroll_layer);
   GRect bounds = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer));
@@ -1474,36 +1457,17 @@ static void scroll_by_delta(int16_t delta_y) {
 static void touch_handler(const TouchEvent *event, void *context) {
   switch (event->type) {
     case TouchEvent_Touchdown:
-      s_touch_start_y = event->y;
       s_touch_last_y = event->y;
-      s_touch_moved = false;
-      s_touch_long_fired = false;
-      if (s_touch_long_timer) {
-        app_timer_cancel(s_touch_long_timer);
-      }
-      s_touch_long_timer = app_timer_register(700, touch_long_timer_callback, NULL);
       break;
 
     case TouchEvent_PositionUpdate: {
-      int16_t delta_from_start = event->y - s_touch_start_y;
       int16_t delta = event->y - s_touch_last_y;
-      if (delta_from_start > 8 || delta_from_start < -8) {
-        s_touch_moved = true;
-        if (s_touch_long_timer) {
-          app_timer_cancel(s_touch_long_timer);
-          s_touch_long_timer = NULL;
-        }
-      }
       scroll_by_delta(delta);
       s_touch_last_y = event->y;
       break;
     }
 
     case TouchEvent_Liftoff:
-      if (s_touch_long_timer) {
-        app_timer_cancel(s_touch_long_timer);
-        s_touch_long_timer = NULL;
-      }
       break;
   }
 }
@@ -1626,10 +1590,6 @@ static void window_appear(Window *window) {
 
 static void window_disappear(Window *window) {
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
-  if (s_touch_long_timer) {
-    app_timer_cancel(s_touch_long_timer);
-    s_touch_long_timer = NULL;
-  }
   touch_service_unsubscribe();
 #endif
 }
