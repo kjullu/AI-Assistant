@@ -179,7 +179,13 @@ test('calculator fetches and caches current currency rates', () => {
   currencyRequest.onload();
 
   const followup = JSON.parse(modelRequests(runtime)[1].body);
-  assert.match(followup.messages.at(-1).content, /74\.834 DKK/);
+  const assistantCall = followup.messages.at(-2);
+  const toolResult = followup.messages.at(-1);
+  assert.equal(assistantCall.role, 'assistant');
+  assert.equal(assistantCall.tool_calls[0].function.name, 'calculator');
+  assert.equal(toolResult.role, 'tool');
+  assert.equal(toolResult.tool_call_id, assistantCall.tool_calls[0].id);
+  assert.match(toolResult.content, /74\.834 DKK/);
   assert.ok(runtime.storage.has('CurrencyRate:EUR:DKK'));
 
   let cachedResult = '';
@@ -203,6 +209,7 @@ test('Health tool requests watch data and resumes the model round', () => {
     payload: { HealthData: 'Watch Health data for today: steps=4321;', RequestId: 12 }
   });
   const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.equal(followup.messages.at(-1).role, 'tool');
   assert.match(followup.messages.at(-1).content, /steps=4321/);
   streamResponse(modelRequests(runtime)[1], { toolCalls: [], reply: 'You took 4,321 steps today.' });
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'You took 4,321 steps today.'));
@@ -299,8 +306,10 @@ test('parallel scrape results retain requested order', () => {
   scrapes[0].onload();
 
   const followupBody = JSON.parse(modelRequests(runtime)[1].body);
-  const resultsMessage = followupBody.messages[followupBody.messages.length - 1].content;
-  assert.ok(resultsMessage.indexOf('FIRST') < resultsMessage.indexOf('SECOND'));
+  const toolMessages = followupBody.messages.filter(message => message.role === 'tool');
+  assert.equal(toolMessages.length, 2);
+  assert.match(toolMessages[0].content, /FIRST/);
+  assert.match(toolMessages[1].content, /SECOND/);
 });
 
 test('the same tool can run in consecutive rounds', () => {
@@ -328,7 +337,10 @@ test('identical calls in one batch share one tool execution', () => {
   scrapes[0].responseText = JSON.stringify({ success: true, data: { markdown: 'SHARED' } });
   scrapes[0].onload();
   const followupBody = JSON.parse(modelRequests(runtime)[1].body);
-  assert.equal((followupBody.messages.at(-1).content.match(/SHARED/g) || []).length, 2);
+  const toolMessages = followupBody.messages.filter(message => message.role === 'tool');
+  assert.equal(toolMessages.length, 2);
+  assert.ok(toolMessages.every(message => /SHARED/.test(message.content)));
+  assert.notEqual(toolMessages[0].tool_call_id, toolMessages[1].tool_call_id);
 });
 
 test('tool execution stops after five rounds', () => {
