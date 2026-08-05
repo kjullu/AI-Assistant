@@ -849,7 +849,11 @@ static void layout_chat(bool scroll_to_bottom) {
   }
 
   if (show_status_message) {
-    y += PADDING;
+    if (!s_show_settings && !s_show_sessions && !s_show_home && has_history) {
+      y -= PADDING;
+    } else {
+      y += PADDING;
+    }
     text_layer_set_text(s_status_message_layer, s_status_text);
     y += resize_text_layer(s_status_message_layer, y, width);
   }

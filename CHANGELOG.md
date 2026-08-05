@@ -7,6 +7,7 @@
 - Show remaining credits, messages, and searches on Pebble Time and Pebble 2 while keeping full Home Stats on Pebble Time 2.
 - Clarify Home Stats platform visibility and automatic monthly resets in phone settings.
 - Reduce the gap between the home title and statistics on all watch sizes.
+- Align in-chat status messages with the final assistant text position.
 
 # 0.3.0
 
