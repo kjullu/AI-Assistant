@@ -176,13 +176,13 @@ module.exports = [
       },
       {
         "type": "text",
-        "defaultValue": "Used and remaining credits are shown on every watch. Messages, searches, and the selected model are shown only on Pebble Time 2. Monthly counters reset automatically at the start of each UTC month."
+        "defaultValue": "Remaining credits, messages, and searches are shown on every watch. Used credits and the selected model are shown only on Pebble Time 2. Monthly counters reset automatically at the start of each UTC month."
       },
       {
         "type": "input",
         "messageKey": "StatsUsedCredits",
         "label": "Used Credits This Month",
-        "description": "Editable counter that resets automatically at the start of each UTC month. Set to 0 to reset it early.",
+        "description": "Editable counter that resets automatically at the start of each UTC month. Shown only on Pebble Time 2. Set to 0 to reset it early.",
         "attributes": {
           "placeholder": "0"
         }
@@ -191,7 +191,7 @@ module.exports = [
         "type": "input",
         "messageKey": "StatsMessages",
         "label": "Messages This Month",
-        "description": "Editable counter that resets automatically at the start of each UTC month. Shown only on Pebble Time 2. Set to 0 to reset it early.",
+        "description": "Editable counter that resets automatically at the start of each UTC month. Set to 0 to reset it early.",
         "attributes": {
           "placeholder": "0"
         }
@@ -200,7 +200,7 @@ module.exports = [
         "type": "input",
         "messageKey": "StatsSearches",
         "label": "Searches This Month",
-        "description": "Editable counter that resets automatically at the start of each UTC month. Shown only on Pebble Time 2. Set to 0 to reset it early.",
+        "description": "Editable counter that resets automatically at the start of each UTC month. Set to 0 to reset it early.",
         "attributes": {
           "placeholder": "0"
         }
