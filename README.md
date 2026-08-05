@@ -49,6 +49,8 @@ The watch can toggle Location, Memory, Calculator, Search, Weather, Choice, Time
 - Select `Say your own`: dictate a custom answer.
 - `BACK`: cancel the choice prompt.
 
+Submitted choice questions and answers are added to the watch conversation before the assistant continues.
+
 ### Long Presses
 
 These controls work outside choice prompts:

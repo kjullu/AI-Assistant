@@ -3,6 +3,7 @@
 - Return tool results to the model with standard tool roles and matching call IDs instead of user messages.
 - Remove the touchscreen hold gesture for clearing conversations to prevent accidental activation.
 - Fix tool and choice navigation keeping selected rows or their context headers off-screen.
+- Show submitted choice questions and answers in the watch conversation.
 
 # 0.3.0
 
