@@ -95,6 +95,7 @@ static Layer *s_choice_layer;
 
 static void update_display(const char *status);
 static void clear_watch_session(void);
+static void append_chat_history(const char *text);
 static bool send_simple_command(uint32_t key, const char *failure_status);
 static void toggle_selected_setting(void);
 static void open_sessions_screen(void);
@@ -425,6 +426,17 @@ static void close_choice_screen(void) {
   update_display("Ready");
 }
 
+static void append_choice_answer_to_history(const char *answer) {
+  if (!answer || !answer[0]) {
+    return;
+  }
+  append_chat_history(s_choice_question[0] ? s_choice_question : "Choice");
+  append_chat_history("\n\nYou\n");
+  append_chat_history(answer);
+  append_chat_history("\n\nAI\n");
+  s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
+}
+
 static void send_choice_answer(void) {
   DictionaryIterator *iter;
   AppMessageResult result = app_message_outbox_begin(&iter);
@@ -448,6 +460,7 @@ static void send_choice_answer(void) {
     vibes_double_pulse();
     return;
   }
+  append_choice_answer_to_history(s_choice_answer_buffer);
   close_choice_screen();
   s_show_home = false;
   update_display("Sending...");
@@ -1297,12 +1310,20 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
     if (status == DictationSessionStatusSuccess) {
       DictionaryIterator *iter;
       AppMessageResult result = app_message_outbox_begin(&iter);
-      if (result == APP_MSG_OK && iter) {
-        dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcription);
-        dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
-        dict_write_end(iter);
-        app_message_outbox_send();
+      if (result != APP_MSG_OK || !iter) {
+        update_display("Choice send failed");
+        vibes_double_pulse();
+        return;
       }
+      dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcription);
+      dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
+      dict_write_end(iter);
+      if (app_message_outbox_send() != APP_MSG_OK) {
+        update_display("Choice send failed");
+        vibes_double_pulse();
+        return;
+      }
+      append_choice_answer_to_history(transcription);
       close_choice_screen();
       s_show_home = false;
       update_display("Sending...");
