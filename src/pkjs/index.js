@@ -1493,13 +1493,37 @@ function sendAssistantDelta(delta, chunkIndex, done, generation) {
   }, currentRequestId);
 }
 
+function formatReverseGeocodeAddress(json) {
+  var address = json.address || {};
+  var road = address.road || address.pedestrian || address.residential || address.path || '';
+  var street = road;
+  if (street && address.house_number) {
+    street += ' ' + address.house_number;
+  }
+  var locality = address.city || address.town || address.village || address.municipality ||
+    address.hamlet || address.locality || address.suburb || address.neighbourhood || '';
+  var postalLocality = locality;
+  if (address.postcode) {
+    postalLocality = address.postcode + (locality ? ' ' + locality : '');
+  }
+  var region = address.state || address.county || address.region || address.province || '';
+  var parts = [];
+
+  if (street) parts.push(street);
+  if (postalLocality) parts.push(postalLocality);
+  if (!locality && region) parts.push(region);
+  if (address.country) parts.push(address.country);
+
+  return parts.length > 0 ? parts.join(', ') : (json.display_name || null);
+}
+
 function reverseGeocode(lat, lon, generation, callback) {
   var request = new XMLHttpRequest();
   trackRequest(request, generation);
   var url = NOMINATIM_REVERSE_URL +
     '?lat=' + encodeURIComponent(lat) +
     '&lon=' + encodeURIComponent(lon) +
-    '&format=json&zoom=10&addressdetails=1';
+    '&format=json&zoom=18&addressdetails=1';
 
   request.open('GET', url, true);
   request.setRequestHeader('Accept', 'application/json');
@@ -1518,16 +1542,7 @@ function reverseGeocode(lat, lon, generation, callback) {
 
     try {
       var json = JSON.parse(request.responseText);
-      var address = json.address || {};
-      var city = address.city || address.town || address.village || address.suburb || address.hamlet || '';
-      var region = address.state || address.county || address.region || address.province || '';
-      var country = address.country || '';
-      var parts = [];
-      if (city) parts.push(city);
-      if (region) parts.push(region);
-      if (country) parts.push(country);
-      var placeName = parts.length > 0 ? parts.join(', ') : (json.display_name || null);
-      callback(placeName);
+      callback(formatReverseGeocodeAddress(json));
     } catch (err) {
       callback(null);
     }
@@ -1577,7 +1592,7 @@ function runLocationTool(generation, callback) {
       }
       var context = 'Current location: latitude ' + lat + ', longitude ' + lon + ', accuracy about ' + accuracy + ' meters.';
       if (placeName) {
-        context += ' Approximate place: ' + placeName + '.';
+        context += ' Approximate address: ' + placeName + '.';
       }
       callback(context, null);
     });
@@ -1587,9 +1602,9 @@ function runLocationTool(generation, callback) {
     }
     callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
   }, {
-    enableHighAccuracy: false,
-    maximumAge: 10 * 60 * 1000,
-    timeout: 10000
+    enableHighAccuracy: true,
+    maximumAge: 60 * 1000,
+    timeout: 15000
   });
 }
 
