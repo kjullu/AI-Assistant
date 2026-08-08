@@ -123,6 +123,31 @@ test('rejects conversions between incompatible dimensions', () => {
   );
 });
 
+test('reverse geocoding formats a precise street and locality address', () => {
+  const runtime = createRuntime();
+  const address = runtime.context.formatReverseGeocodeAddress({
+    address: {
+      house_number: '12',
+      road: 'Example Road',
+      postcode: '4500',
+      municipality: 'Odsherred Municipality',
+      state: 'Region Zealand',
+      country: 'Denmark'
+    }
+  });
+
+  assert.equal(address, 'Example Road 12, 4500 Odsherred Municipality, Denmark');
+});
+
+test('reverse geocoding retains a region fallback when no locality is available', () => {
+  const runtime = createRuntime();
+  const address = runtime.context.formatReverseGeocodeAddress({
+    address: { state: 'Region Zealand', country: 'Denmark' }
+  });
+
+  assert.equal(address, 'Region Zealand, Denmark');
+});
+
 test('final answers stream as plain text without a JSON wrapper', () => {
   const runtime = createRuntime();
   prompt(runtime, 'Say hello');
