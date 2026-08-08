@@ -662,7 +662,6 @@ static void clear_watch_session(void) {
   s_show_new_session = false;
   s_request_active = false;
   s_response_started = false;
-  vibes_short_pulse();
   update_display("Ready");
 }
 
@@ -682,6 +681,7 @@ static void open_new_session_screen(void) {
   s_show_home = false;
   s_show_settings = false;
   s_show_sessions = false;
+  vibes_short_pulse();
   update_display("Ready");
 }
 
