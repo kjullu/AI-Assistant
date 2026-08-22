@@ -78,6 +78,7 @@
       "HealthRequest",
       "HealthData",
       "ReasoningEffort",
+      "OpenRouterProvider",
       "ToolActivity"
     ],
     "resources": {
