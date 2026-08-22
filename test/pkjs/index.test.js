@@ -171,6 +171,60 @@ test('model default omits the reasoning request parameter', () => {
   assert.equal(body.reasoning, undefined);
 });
 
+test('configured provider restricts OpenRouter routing', () => {
+  const runtime = createRuntime({ OpenRouterProvider: 'deepinfra/turbo' });
+  prompt(runtime, 'Use DeepInfra');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.deepEqual(body.provider, { only: ['deepinfra/turbo'] });
+});
+
+test('automatic provider leaves OpenRouter routing unchanged', () => {
+  const runtime = createRuntime({ OpenRouterProvider: 'auto' });
+  prompt(runtime, 'Choose automatically');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.equal(body.provider, undefined);
+});
+
+test('provider options use exact endpoint tags and disambiguate variants', () => {
+  const runtime = createRuntime();
+  const options = JSON.parse(JSON.stringify(runtime.context.providerOptionsForEndpoints([
+    { provider_name: 'DeepInfra', tag: 'deepinfra/turbo' },
+    { provider_name: 'OpenAI', tag: 'openai' },
+    { provider_name: 'DeepInfra', tag: 'deepinfra' },
+    { provider_name: 'DeepInfra', tag: 'deepinfra' }
+  ])));
+  assert.deepEqual(options, [
+    { label: 'Automatic (OpenRouter)', value: 'auto' },
+    { label: 'DeepInfra: deepinfra', value: 'deepinfra' },
+    { label: 'DeepInfra: deepinfra/turbo', value: 'deepinfra/turbo' },
+    { label: 'OpenAI', value: 'openai' }
+  ]);
+});
+
+test('provider endpoints are loaded with the API key and cached', () => {
+  const runtime = createRuntime();
+  let loaded;
+  runtime.context.fetchProviderEndpoints('openai/gpt-oss-20b:free', endpoints => {
+    loaded = endpoints;
+  });
+  const request = runtime.requests.at(-1);
+  assert.equal(request.method, 'GET');
+  assert.equal(request.url, 'https://openrouter.ai/api/v1/models/openai/gpt-oss-20b%3Afree/endpoints');
+  assert.equal(request.headers.Authorization, 'Bearer test-key');
+  request.status = 200;
+  request.responseText = JSON.stringify({
+    data: {
+      endpoints: [
+        { provider_name: 'Groq', tag: 'groq' },
+        { provider_name: 'Ignored without tag' }
+      ]
+    }
+  });
+  request.onload();
+  assert.deepEqual(JSON.parse(JSON.stringify(loaded)), [{ provider_name: 'Groq', tag: 'groq' }]);
+  assert.ok(runtime.storage.has('ProviderEndpoints:openai/gpt-oss-20b:free'));
+});
+
 test('reasoning options follow OpenRouter model capabilities', () => {
   const runtime = createRuntime();
   const gemini = {

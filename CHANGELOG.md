@@ -1,6 +1,7 @@
 # 0.3.3-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
 
 - Improve location results with fresher high-accuracy coordinates and street, postal code, and locality details.
+- Add a model-aware provider picker to the phone settings.
 
 # 0.3.2
 

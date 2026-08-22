@@ -79,9 +79,10 @@ Open the app settings from the gear in the Pebble phone app.
 
 - `OpenRouter API Key`: required for assistant requests, usually beginning with `sk-or-v1-`.
 - `Model`: accepts an OpenRouter model ID and defaults to `moonshotai/kimi-k2.5`.
+- `Provider`: lists the provider endpoints available for the saved model. Automatic routing lets OpenRouter choose, while selecting an endpoint restricts requests to it.
 - `Reasoning`: shows the model default and the controls advertised by OpenRouter for the saved model. Depending on the model, this may include disabled, provider-default enabled, or specific effort levels. Reasoning output is excluded from replies shown on the watch.
 
-Reopen settings after changing the model to refresh its reasoning capabilities.
+Reopen settings after changing the model to refresh its providers and reasoning capabilities.
 
 ### Tools
 
