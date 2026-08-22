@@ -48,6 +48,7 @@ var MAX_SEND_ATTEMPTS = 3;
 var MAX_HISTORY_MESSAGES = 24;
 var CURRENCY_CACHE_MS = 12 * 60 * 60 * 1000;
 var REASONING_CAPABILITY_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+var PROVIDER_ENDPOINT_CACHE_MS = 24 * 60 * 60 * 1000;
 
 var conversationHistory = [];
 var activeSessionCreatedAt = null;
@@ -239,6 +240,10 @@ function normalizedModelId(model) {
   return String(model || DEFAULT_MODEL).replace(/:(free|nitro|floor|exacto)$/i, '');
 }
 
+function providerModelId(model) {
+  return String(model || DEFAULT_MODEL).replace(/:(nitro|floor|exacto)$/i, '');
+}
+
 function modelSupportsReasoning(modelInfo) {
   if (!modelInfo) return false;
   if (modelInfo.reasoning) return true;
@@ -312,6 +317,55 @@ function configureReasoningSetting(model, modelInfo) {
   clay.setSettings('ReasoningEffort', available ? saved : 'default');
 }
 
+function providerOptionsForEndpoints(endpoints) {
+  var options = [{ label: 'Automatic (OpenRouter)', value: 'auto' }];
+  var seen = {};
+  var labelCounts = {};
+  var providers = [];
+  for (var i = 0; endpoints && i < endpoints.length; i++) {
+    var tag = String(endpoints[i].tag || '');
+    if (!tag || seen[tag]) continue;
+    seen[tag] = true;
+    var label = String(endpoints[i].provider_name || tag);
+    labelCounts[label] = (labelCounts[label] || 0) + 1;
+    providers.push({
+      label: label,
+      value: tag
+    });
+  }
+  providers.sort(function(a, b) {
+    if (a.label === b.label) return a.value < b.value ? -1 : 1;
+    return a.label < b.label ? -1 : 1;
+  });
+  for (var j = 0; j < providers.length; j++) {
+    if (labelCounts[providers[j].label] > 1) {
+      providers[j].label += ': ' + providers[j].value;
+    }
+    options.push(providers[j]);
+  }
+  return options;
+}
+
+function providerDescription(model, endpoints) {
+  if (!endpoints) {
+    return 'Could not load OpenRouter providers for ' + model + '. Automatic routing remains available.';
+  }
+  if (!endpoints.length) {
+    return 'OpenRouter did not report any provider endpoints for ' + model + '. Automatic routing remains available.';
+  }
+  return model + ': choose a provider endpoint or let OpenRouter route automatically. Reopen settings after changing model.';
+}
+
+function configureProviderSetting(model, endpoints) {
+  var item = clay.config ? findClayItem(clay.config, 'openrouter-provider') : null;
+  if (!item) return;
+  item.options = providerOptionsForEndpoints(endpoints);
+  item.description = providerDescription(model, endpoints);
+  var saved = getSetting('OpenRouterProvider', 'auto');
+  var available = item.options.some(function(option) { return option.value === saved; });
+  clay.setSettings('OpenRouterProvider', available ? saved : 'auto');
+}
+
 function reasoningCapabilityCacheKey(model) {
   return 'ReasoningCapability:' + normalizedModelId(model);
 }
@@ -374,6 +428,77 @@ function fetchReasoningCapability(model, callback) {
   request.send();
 }
 
+function providerEndpointCacheKey(model) {
+  return 'ProviderEndpoints:' + providerModelId(model);
+}
+
+function getCachedProviderEndpoints(model, allowStale) {
+  try {
+    var cached = JSON.parse(localStorage.getItem(providerEndpointCacheKey(model)) || 'null');
+    if (cached && (allowStale || Date.now() - cached.fetchedAt < PROVIDER_ENDPOINT_CACHE_MS)) {
+      return cached.endpoints;
+    }
+  } catch (err) {
+  }
+  return null;
+}
+
+function providerEndpointsUrl(model) {
+  var parts = providerModelId(model).split('/');
+  if (parts.length < 2 || !parts[0] || !parts.slice(1).join('/')) return '';
+  return 'https://openrouter.ai/api/v1/models/' + encodeURIComponent(parts.shift()) + '/' +
+    parts.map(encodeURIComponent).join('/') + '/endpoints';
+}
+
+function fetchProviderEndpoints(model, callback) {
+  var apiKey = getSetting('OpenRouterApiKey', '');
+  var url = providerEndpointsUrl(model);
+  if (!apiKey || !url) {
+    callback(getCachedProviderEndpoints(model, true));
+    return;
+  }
+  var request = new XMLHttpRequest();
+  var finished = false;
+  function finish(endpoints) {
+    if (finished) return;
+    finished = true;
+    callback(endpoints);
+  }
+  request.open('GET', url, true);
+  request.setRequestHeader('Accept', 'application/json');
+  request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+  request.timeout = 12000;
+  request.onload = function() {
+    if (request.status < 200 || request.status >= 300) {
+      finish(getCachedProviderEndpoints(model, true));
+      return;
+    }
+    try {
+      var json = JSON.parse(request.responseText);
+      var source = json.data && json.data.endpoints;
+      var endpoints = [];
+      for (var i = 0; source && i < source.length; i++) {
+        if (source[i].tag) {
+          endpoints.push({
+            provider_name: source[i].provider_name || source[i].tag,
+            tag: source[i].tag
+          });
+        }
+      }
+      localStorage.setItem(providerEndpointCacheKey(model), JSON.stringify({
+        fetchedAt: Date.now(),
+        endpoints: endpoints
+      }));
+      finish(endpoints);
+    } catch (err) {
+      finish(getCachedProviderEndpoints(model, true));
+    }
+  };
+  request.onerror = function() { finish(getCachedProviderEndpoints(model, true)); };
+  request.ontimeout = function() { finish(getCachedProviderEndpoints(model, true)); };
+  request.send();
+}
+
 function applyReasoningSetting(payload) {
   var effort = getSetting('ReasoningEffort', 'default');
   if (effort === 'default') return payload;
@@ -384,6 +509,18 @@ function applyReasoningSetting(payload) {
     payload.reasoning.effort = effort;
   }
   return payload;
+}
+
+function applyProviderSetting(payload) {
+  var provider = getSetting('OpenRouterProvider', 'auto');
+  if (provider !== 'auto') {
+    payload.provider = { only: [provider] };
+  }
+  return payload;
+}
+
+function applyModelSettings(payload) {
+  return applyProviderSetting(applyReasoningSetting(payload));
 }
 
 function getScrapeAvailable() {
@@ -809,6 +946,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableTimeline = settingValue(convertedSettings, rawSettings, 'EnableTimeline', messageKeys.EnableTimeline);
   var enableHealth = settingValue(convertedSettings, rawSettings, 'EnableHealth', messageKeys.EnableHealth);
   var reasoningEffort = settingValue(convertedSettings, rawSettings, 'ReasoningEffort', messageKeys.ReasoningEffort);
+  var openRouterProvider = settingValue(convertedSettings, rawSettings, 'OpenRouterProvider', messageKeys.OpenRouterProvider);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
   var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
@@ -853,6 +991,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (reasoningEffort !== undefined) {
     localStorage.setItem('ReasoningEffort', String(reasoningEffort));
+  }
+  if (openRouterProvider !== undefined) {
+    localStorage.setItem('OpenRouterProvider', String(openRouterProvider));
   }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());
@@ -1666,7 +1807,7 @@ function callModel(messages, generation, callback) {
     showError('OpenRouter timed out.', 'OpenRouter request timed out');
   };
 
-  request.send(JSON.stringify(applyReasoningSetting({
+  request.send(JSON.stringify(applyModelSettings({
     model: model,
     messages: messages,
     temperature: 0.2
@@ -1877,7 +2018,7 @@ function callModelStream(messages, generation, callback) {
     }
   }, STREAM_WATCHDOG_MS);
 
-  request.send(JSON.stringify(applyReasoningSetting({
+  request.send(JSON.stringify(applyModelSettings({
     model: model,
     messages: messages,
     temperature: 0.2,
@@ -2596,8 +2737,9 @@ Pebble.addEventListener('appmessage', function(e) {
   }
 });
 
-function openConfiguration(model, reasoningInfo) {
+function openConfiguration(model, reasoningInfo, providerEndpoints) {
   configureReasoningSetting(model, reasoningInfo);
+  configureProviderSetting(model, providerEndpoints);
   var stats = getMonthlyStats();
   clay.setSettings({
     NotesMemoryText: notesToText(),
@@ -2626,14 +2768,40 @@ function openConfiguration(model, reasoningInfo) {
 
 Pebble.addEventListener('showConfiguration', function() {
   var model = getSetting('OpenRouterModel', DEFAULT_MODEL);
-  var cached = getCachedReasoningCapability(model, true);
-  if (cached) {
-    openConfiguration(model, cached);
+  var reasoningInfo = getCachedReasoningCapability(model, true);
+  var providerEndpoints = getCachedProviderEndpoints(model, true);
+  var needsReasoning = reasoningInfo === null;
+  var needsProviders = providerEndpoints === null;
+  var waiting = (needsReasoning ? 1 : 0) + (needsProviders ? 1 : 0);
+
+  function finishOne() {
+    waiting--;
+    if (waiting === 0) {
+      openConfiguration(model, reasoningInfo, providerEndpoints);
+    }
+  }
+
+  if (!waiting) {
+    openConfiguration(model, reasoningInfo, providerEndpoints);
     fetchReasoningCapability(model, function() {});
+    fetchProviderEndpoints(model, function() {});
   } else {
-    fetchReasoningCapability(model, function(reasoningInfo) {
-      openConfiguration(model, reasoningInfo);
-    });
+    if (needsReasoning) {
+      fetchReasoningCapability(model, function(result) {
+        reasoningInfo = result;
+        finishOne();
+      });
+    } else {
+      fetchReasoningCapability(model, function() {});
+    }
+    if (needsProviders) {
+      fetchProviderEndpoints(model, function(result) {
+        providerEndpoints = result;
+        finishOne();
+      });
+    } else {
+      fetchProviderEndpoints(model, function() {});
+    }
   }
 });
 

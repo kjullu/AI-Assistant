@@ -33,6 +33,17 @@ module.exports = [
       },
       {
         "type": "select",
+        "id": "openrouter-provider",
+        "messageKey": "OpenRouterProvider",
+        "defaultValue": "auto",
+        "label": "Provider",
+        "description": "OpenRouter providers for the saved model are loaded when settings open.",
+        "options": [
+          { "label": "Automatic (OpenRouter)", "value": "auto" }
+        ]
+      },
+      {
+        "type": "select",
         "id": "reasoning-effort",
         "messageKey": "ReasoningEffort",
         "defaultValue": "default",
