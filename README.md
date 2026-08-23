@@ -91,7 +91,7 @@ Reopen settings after changing the model to refresh its providers and reasoning 
 - `Calculator`: enabled by default. Supports arithmetic, compatible physical-unit conversions, and current currency conversion.
 - `Brave Search`: disabled by default and requires a separate Brave Search API key.
 - `Firecrawl Scrape`: disabled by default and requires a separate Firecrawl API key.
-- `Weather`: enabled by default. Supports current and forecast weather for a requested place.
+- `Weather`: enabled by default. Supports current and forecast weather for a requested place. Current-location weather uses phone coordinates when Location is enabled.
 - `Choice`: enabled by default. Lets the model present selectable answers on the watch.
 - `Timeline`: enabled by default. Lets the model add a pin when the user asks to schedule something.
 - `Health`: disabled by default. Lets the model request supported watch-recorded Health data for an inclusive date range.
@@ -107,7 +107,7 @@ Enabled tools may send data to other services:
 - `Location`: the phone obtains its coordinates and sends them to Nominatim for reverse geocoding. The coordinates, reported accuracy, and approximate place name are then returned to the selected model through OpenRouter.
 - `Brave Search`: search queries are sent to Brave Search using the configured API key. Up to three results are returned to the model.
 - `Firecrawl Scrape`: requested page URLs are sent to Firecrawl using the configured API key. Readable page content is returned to the model and truncated to 4,000 characters.
-- `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts.
+- `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts. Current-location requests send the phone coordinates directly to Open-Meteo when Location is enabled.
 - `Calculator`: arithmetic and physical-unit conversions run locally. Currency codes are sent to Frankfurter for current reference rates; amounts are converted locally.
 - `Timeline`: pin content is sent to Pebble's timeline API using the current user's timeline token.
 - `Health`: requested steps, active time, distance, sleep, calories, and supported heart-rate aggregates are read from Pebble Health and returned to the selected model through OpenRouter. Ranges that include today also include available current heart rate and activity data. Availability depends on the watch and requested date range.

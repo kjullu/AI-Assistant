@@ -243,6 +243,77 @@ test('reasoning options follow OpenRouter model capabilities', () => {
   );
 });
 
+test('back-to-back JSON tool requests are parsed instead of shown as text', () => {
+  const runtime = createRuntime();
+  const parsed = runtime.context.parseAssistantContent(
+    '{"toolCalls":[{"name":"location","arguments":{}}]}' +
+    '{"toolCalls":[{"name":"weather","arguments":{"place":"current location","timeframe":"today"}}]}' +
+    'Hvilken by eller sted vil du have vejret for?'
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(parsed.toolCalls)).map(call => call.name),
+    ['location', 'weather']
+  );
+  assert.equal(parsed.reply, 'Hvilken by eller sted vil du have vejret for?');
+});
+
+test('current-location weather uses phone coordinates without geocoding a place name', () => {
+  const runtime = createRuntime({ EnableLocation: '1' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  let result;
+  let error;
+  runtime.context.runWeatherTool(
+    { place: 'current location', timeframe: 'today' },
+    runtime.context.requestGeneration,
+    (content, problem) => {
+      result = content;
+      error = problem;
+    }
+  );
+
+  assert.equal(runtime.requests.some(request => request.url && request.url.includes('/search')), false);
+  const forecast = runtime.requests.find(request => request.url && request.url.includes('/forecast'));
+  assert.match(forecast.url, /latitude=55\.6761/);
+  assert.match(forecast.url, /longitude=12\.5683/);
+  forecast.status = 200;
+  forecast.responseText = JSON.stringify({
+    daily: {
+      time: ['2026-08-22'],
+      weather_code: [2],
+      temperature_2m_max: [21.4],
+      temperature_2m_min: [13.2],
+      precipitation_sum: [0],
+      precipitation_probability_max: [10]
+    },
+    daily_units: {
+      temperature_2m_max: '°C',
+      precipitation_sum: 'mm',
+      precipitation_probability_max: '%'
+    }
+  });
+  forecast.onload();
+
+  assert.equal(error, null);
+  assert.match(result, /Weather for Current location/);
+  assert.match(result, /Today: 13-21°C/);
+});
+
+test('current-location weather respects the Location setting', () => {
+  const runtime = createRuntime({ EnableLocation: '0' });
+  let error;
+  runtime.context.runWeatherTool(
+    { place: 'current location', timeframe: 'today' },
+    runtime.context.requestGeneration,
+    (content, problem) => { error = problem; }
+  );
+  assert.match(error, /Location access is disabled/);
+  assert.equal(runtime.requests.length, 0);
+});
+
 test('calculator fetches and caches current currency rates', () => {
   const runtime = createRuntime();
   prompt(runtime, 'Convert ten euro to kroner');
