@@ -157,6 +157,16 @@ test('final answers stream as plain text without a JSON wrapper', () => {
   assert.match(runtime.context.buildSystemPrompt(), /final watch-friendly answer as plain text/);
 });
 
+test('the system prompt advertises the Markdown supported by the watch', () => {
+  const runtime = createRuntime();
+  const promptText = runtime.context.buildSystemPrompt();
+  assert.match(promptText, /renders light Markdown/);
+  assert.match(promptText, /\*\*bold\*\*/);
+  assert.match(promptText, /bullet or numbered lists/);
+  assert.match(promptText, /`inline code`/);
+  assert.match(promptText, /Avoid tables/);
+});
+
 test('configured reasoning effort is sent but excluded from output', () => {
   const runtime = createRuntime({ ReasoningEffort: 'low' });
   prompt(runtime, 'Think briefly');

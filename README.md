@@ -12,6 +12,7 @@ The app targets the `basalt`, `diorite`, and `emery` Pebble platforms.
 - Shows the five most recent saved conversations on the watch.
 - Lets the model use enabled tools repeatedly, with independent calls executed in parallel when possible.
 - Shows every tool call as a separate activity line in the watch conversation before the final response.
+- Renders light Markdown in assistant replies, including bold text, headings, lists, and inline or fenced code. Italic markers are removed because the built-in Pebble fonts do not include italics.
 - Can add requested reminders and events to the user's Pebble timeline when Timeline is enabled.
 - Shows the remaining OpenRouter credit balance plus monthly message and search counts on every home screen. Pebble Time 2 also shows used credits and the selected model. Monthly counters reset at the start of each UTC month; the remaining credit balance does not.
 

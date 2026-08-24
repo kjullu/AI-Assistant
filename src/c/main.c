@@ -1,4 +1,5 @@
 #include <pebble.h>
+#include <ctype.h>
 
 //AI: Small spacing values used to lay out the Bobby-like stacked chat view.
 #define PADDING 5
@@ -206,6 +207,281 @@ static void draw_toggle_switch(GContext *ctx, int16_t x, int16_t y, bool on, boo
   graphics_fill_rect(ctx, GRect(knob_x, knob_y, KNOB_SIZE, KNOB_SIZE), KNOB_SIZE / 2, GCornersAll);
 }
 
+typedef struct {
+  GContext *ctx;
+  bool draw;
+  int16_t left;
+  int16_t right;
+  int16_t x;
+  int16_t y;
+  int16_t line_height;
+  GFont body_font;
+  GFont bold_font;
+  GFont code_font;
+} MarkdownLayout;
+
+static int16_t font_line_height(GFont font) {
+  return measure_text_height("Ag", font, TEXT_MEASURE_HEIGHT);
+}
+
+static int16_t markdown_piece_width(const char *text, GFont font) {
+  GSize size = graphics_text_layout_get_content_size(text, font,
+                                                     GRect(0, 0, TEXT_MEASURE_HEIGHT, 64),
+                                                     GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  return size.w;
+}
+
+static void markdown_next_line(MarkdownLayout *layout) {
+  if (layout->line_height == 0) {
+    layout->line_height = font_line_height(layout->body_font);
+  }
+  layout->y += layout->line_height;
+  layout->x = layout->left;
+  layout->line_height = 0;
+}
+
+static void markdown_draw_piece(MarkdownLayout *layout, const char *piece, GFont font, bool code) {
+  if (!piece || !piece[0]) {
+    return;
+  }
+
+  int16_t available_width = layout->right - layout->left;
+  int16_t piece_width = markdown_piece_width(piece, font);
+  int16_t piece_height = font_line_height(font);
+  if (strcmp(piece, " ") == 0) {
+    if (layout->x != layout->left) {
+      if (layout->x + piece_width > layout->right) {
+        markdown_next_line(layout);
+      } else {
+        layout->x += piece_width;
+      }
+    }
+    return;
+  }
+
+  if (piece_width > available_width) {
+    if (layout->x != layout->left) {
+      markdown_next_line(layout);
+    }
+    int16_t wrapped_height = measure_text_height(piece, font, available_width);
+    if (layout->draw) {
+      graphics_context_set_text_color(layout->ctx, code ? COLOR_DIM : GColorBlack);
+      graphics_draw_text(layout->ctx, piece, font,
+                         GRect(layout->left, layout->y, available_width, wrapped_height + 2),
+                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    }
+    layout->y += wrapped_height;
+    layout->x = layout->left;
+    layout->line_height = 0;
+    return;
+  }
+
+  if (layout->x != layout->left && layout->x + piece_width > layout->right) {
+    markdown_next_line(layout);
+  }
+  if (piece_height > layout->line_height) {
+    layout->line_height = piece_height;
+  }
+  if (layout->draw) {
+    graphics_context_set_text_color(layout->ctx, code ? COLOR_DIM : GColorBlack);
+    int16_t draw_width = piece_width + 3;
+    if (draw_width > layout->right - layout->x) {
+      draw_width = layout->right - layout->x;
+    }
+    graphics_draw_text(layout->ctx, piece, font,
+                       GRect(layout->x, layout->y, draw_width, piece_height + 2),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  layout->x += piece_width;
+}
+
+static bool markdown_has_closer(const char *text, const char *marker) {
+  return text && marker && strstr(text, marker) != NULL;
+}
+
+static int16_t layout_markdown_inline(GContext *ctx, const char *text, int16_t x, int16_t y,
+                                      int16_t width, GFont body_font, GFont bold_font,
+                                      GFont code_font, bool draw) {
+  MarkdownLayout layout = {
+    .ctx = ctx,
+    .draw = draw,
+    .left = x,
+    .right = x + width,
+    .x = x,
+    .y = y,
+    .line_height = 0,
+    .body_font = body_font,
+    .bold_font = bold_font,
+    .code_font = code_font
+  };
+  bool bold = false;
+  bool italic = false;
+  bool code = false;
+  const char *start = text ? text : "";
+  const char *cursor = text ? text : "";
+
+  while (*cursor) {
+    if (*cursor == '\\' && cursor[1] != '\0') {
+      char escaped[2] = { cursor[1], '\0' };
+      markdown_draw_piece(&layout, escaped, bold ? bold_font : body_font, false);
+      cursor += 2;
+      continue;
+    }
+    if (code && *cursor == '`') {
+      code = false;
+      cursor++;
+      continue;
+    }
+    if (!code && *cursor == '`' && markdown_has_closer(cursor + 1, "`")) {
+      code = true;
+      cursor++;
+      continue;
+    }
+    if (!code && strncmp(cursor, "**", 2) == 0 &&
+        (bold || markdown_has_closer(cursor + 2, "**"))) {
+      bold = !bold;
+      cursor += 2;
+      continue;
+    }
+    if (!code && strncmp(cursor, "__", 2) == 0 &&
+        (bold || markdown_has_closer(cursor + 2, "__"))) {
+      bold = !bold;
+      cursor += 2;
+      continue;
+    }
+    bool emphasis_can_open = *cursor == '*' || cursor == start ||
+                             !isalnum((unsigned char)cursor[-1]);
+    if (!code && (*cursor == '*' || *cursor == '_') &&
+        (italic || (emphasis_can_open && !isspace((unsigned char)cursor[1]) &&
+                    cursor[1] != '\0' && strchr(cursor + 1, *cursor) != NULL))) {
+      italic = !italic;
+      cursor++;
+      continue;
+    }
+
+    if (isspace((unsigned char)*cursor)) {
+      while (isspace((unsigned char)*cursor)) {
+        cursor++;
+      }
+      markdown_draw_piece(&layout, " ", code ? code_font : (bold ? bold_font : body_font), code);
+      continue;
+    }
+
+    char piece[192];
+    size_t length = 0;
+    while (cursor[length] != '\0' && !isspace((unsigned char)cursor[length]) &&
+           cursor[length] != '`' && cursor[length] != '*' && cursor[length] != '_' &&
+           cursor[length] != '\\' && length < sizeof(piece) - 1) {
+      length++;
+    }
+    if (length == 0) {
+      length = 1;
+    }
+    while (length > 1 && ((unsigned char)cursor[length] & 0xC0) == 0x80) {
+      length--;
+    }
+    memcpy(piece, cursor, length);
+    piece[length] = '\0';
+    GFont font = code ? code_font : (bold ? bold_font : body_font);
+    markdown_draw_piece(&layout, piece, font, code);
+    cursor += length;
+  }
+
+  if (layout.line_height == 0) {
+    layout.line_height = font_line_height(body_font);
+  }
+  return (layout.y - y) + layout.line_height;
+}
+
+static bool is_numbered_list_line(const char *line, size_t *prefix_length) {
+  size_t i = 0;
+  while (line[i] >= '0' && line[i] <= '9') {
+    i++;
+  }
+  if (i == 0 || line[i] != '.' || line[i + 1] != ' ') {
+    return false;
+  }
+  *prefix_length = i + 2;
+  return true;
+}
+
+static int16_t layout_markdown_line(GContext *ctx, const char *line, int16_t x, int16_t y,
+                                    int16_t width, bool draw, bool *in_code_block) {
+  GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+  GFont bold_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  GFont code_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  const char *content = line ? line : "";
+
+  if (strncmp(content, "```", 3) == 0) {
+    *in_code_block = !*in_code_block;
+    return 0;
+  }
+  if (*in_code_block) {
+    int16_t code_height = measure_text_height(content, code_font, width - PADDING);
+    if (draw) {
+      graphics_context_set_text_color(ctx, COLOR_DIM);
+      graphics_draw_text(ctx, content, code_font,
+                         GRect(x + PADDING, y, width - PADDING, code_height + 2),
+                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    }
+    return code_height;
+  }
+  if (strcmp(content, "---") == 0 || strcmp(content, "***") == 0) {
+    draw_divider(ctx, x, y + DIVIDER_GAP / 2, width, COLOR_DIM, draw);
+    return DIVIDER_GAP;
+  }
+
+  int heading_level = 0;
+  while (heading_level < 3 && content[heading_level] == '#') {
+    heading_level++;
+  }
+  if (heading_level > 0 && content[heading_level] == ' ') {
+    content += heading_level + 1;
+    if (heading_level == 1) {
+      body_font = fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD);
+      bold_font = body_font;
+    } else {
+      body_font = bold_font;
+    }
+  }
+
+  const char *prefix = NULL;
+  char numbered_prefix[16];
+  size_t prefix_length = 0;
+  if ((content[0] == '-' || content[0] == '*') && content[1] == ' ') {
+    prefix = "•";
+    content += 2;
+  } else if (is_numbered_list_line(content, &prefix_length)) {
+    size_t copy_length = prefix_length - 1;
+    if (copy_length >= sizeof(numbered_prefix)) {
+      copy_length = sizeof(numbered_prefix) - 1;
+    }
+    memcpy(numbered_prefix, content, copy_length);
+    numbered_prefix[copy_length] = '\0';
+    prefix = numbered_prefix;
+    content += prefix_length;
+  }
+
+  int16_t prefix_height = 0;
+  int16_t content_x = x;
+  int16_t content_width = width;
+  if (prefix) {
+    int16_t prefix_width = markdown_piece_width(prefix, body_font) + PADDING;
+    prefix_height = font_line_height(body_font);
+    if (draw) {
+      graphics_context_set_text_color(ctx, GColorBlack);
+      graphics_draw_text(ctx, prefix, body_font, GRect(x, y, prefix_width, prefix_height + 2),
+                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    }
+    content_x += prefix_width;
+    content_width -= prefix_width;
+  }
+
+  int16_t content_height = layout_markdown_inline(ctx, content, content_x, y, content_width,
+                                                  body_font, bold_font, code_font, draw);
+  return content_height > prefix_height ? content_height : prefix_height;
+}
+
 static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
   GFont header_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
   GFont date_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
@@ -214,6 +490,8 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
   int16_t width = bounds.size.w;
   int16_t y = 0;
   char *line = s_sessions_text;
+  bool assistant_markdown = false;
+  bool in_code_block = false;
 
   while (line && *line) {
     char *next = strchr(line, '\n');
@@ -222,10 +500,14 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
     }
 
     if (line[0] != '\0' && strcmp(line, "---") == 0) {
+      assistant_markdown = false;
+      in_code_block = false;
       draw_divider(ctx, 0, y + DIVIDER_GAP / 2, width, COLOR_DIM, draw);
       y += DIVIDER_GAP + PADDING;
     } else if (line[0] != '\0') {
       if (is_session_header(line)) {
+        assistant_markdown = false;
+        in_code_block = false;
         int16_t hh = measure_text_height(line, header_font, width);
         if (draw) {
           graphics_context_set_fill_color(ctx, ACCENT_AI);
@@ -246,7 +528,10 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
           memmove(remainder, remainder + 1, strlen(remainder));
         }
 
-        GColor label_color = (strncmp(prefix, "user", 4) == 0 || strncmp(prefix, "User", 4) == 0) ? ACCENT_USER : ACCENT_AI;
+        bool is_user = strncmp(prefix, "user", 4) == 0 || strncmp(prefix, "User", 4) == 0;
+        GColor label_color = is_user ? ACCENT_USER : ACCENT_AI;
+        assistant_markdown = !is_user;
+        in_code_block = false;
         int16_t label_h = measure_text_height(prefix, label_font, width);
         if (draw) {
           graphics_context_set_text_color(ctx, label_color);
@@ -255,8 +540,10 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
         }
         y += label_h + 1;
         if (remainder[0] != '\0') {
-          int16_t body_h = measure_text_height(remainder, body_font, width - (PADDING * 2));
-          if (draw) {
+          int16_t body_h = assistant_markdown ?
+            layout_markdown_line(ctx, remainder, PADDING * 2, y, width - (PADDING * 3), draw, &in_code_block) :
+            measure_text_height(remainder, body_font, width - (PADDING * 2));
+          if (draw && !assistant_markdown) {
             graphics_context_set_text_color(ctx, GColorBlack);
             graphics_draw_text(ctx, remainder, body_font, GRect(PADDING * 2, y, width - (PADDING * 3), body_h + PADDING),
                                GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
@@ -264,6 +551,8 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
           y += body_h + PADDING;
         }
       } else if (strncmp(line, "20", 2) == 0 && strlen(line) >= 10 && strchr(line, 'T')) {
+        assistant_markdown = false;
+        in_code_block = false;
         int16_t dh = measure_text_height(line, date_font, width - (PADDING * 2));
         if (draw) {
           graphics_context_set_text_color(ctx, COLOR_DIM);
@@ -272,6 +561,8 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
         }
         y += dh + 1 + PADDING;
       } else if (strcmp(line, "No saved sessions yet.") == 0) {
+        assistant_markdown = false;
+        in_code_block = false;
         int16_t mh = measure_text_height(line, date_font, width - (PADDING * 2));
         if (draw) {
           graphics_context_set_text_color(ctx, COLOR_DIM);
@@ -280,8 +571,10 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
         }
         y += mh + PADDING;
       } else {
-        int16_t size_h = measure_text_height(line, body_font, width - (PADDING * 2));
-        if (draw) {
+        int16_t size_h = assistant_markdown ?
+          layout_markdown_line(ctx, line, PADDING, y, width - (PADDING * 2), draw, &in_code_block) :
+          measure_text_height(line, body_font, width - (PADDING * 2));
+        if (draw && !assistant_markdown) {
           graphics_context_set_text_color(ctx, GColorBlack);
           graphics_draw_text(ctx, line, body_font, GRect(PADDING, y, width - (PADDING * 2), size_h + PADDING),
                              GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
@@ -847,6 +1140,8 @@ static int16_t layout_history_text(GContext *ctx, GRect bounds, bool draw) {
   int16_t y = 0;
   char *line = s_chat_history;
   bool first_turn = true;
+  bool assistant_markdown = false;
+  bool in_code_block = false;
 
   while (line && *line) {
     char *next = strchr(line, '\n');
@@ -875,12 +1170,16 @@ static int16_t layout_history_text(GContext *ctx, GRect bounds, bool draw) {
           }
         }
         first_turn = false;
+        assistant_markdown = strcmp(line, "AI") == 0;
+        in_code_block = false;
         GColor fill = history_label_color(line);
         int16_t badge_h = draw_badge(ctx, PADDING, y, width - (PADDING * 2), line, fill, badge_font, draw);
         y += badge_h;
       } else {
-        int16_t body_h = measure_text_height(line, body_font, width - (PADDING * 2));
-        if (draw) {
+        int16_t body_h = assistant_markdown ?
+          layout_markdown_line(ctx, line, PADDING, y, width - (PADDING * 2), draw, &in_code_block) :
+          measure_text_height(line, body_font, width - (PADDING * 2));
+        if (draw && !assistant_markdown) {
           graphics_context_set_text_color(ctx, GColorBlack);
           graphics_draw_text(ctx, line, body_font, GRect(PADDING, y, width - (PADDING * 2), body_h + PADDING),
                              GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
