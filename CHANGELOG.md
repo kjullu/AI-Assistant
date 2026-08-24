@@ -3,6 +3,7 @@
 - Improve location results with fresher high-accuracy coordinates and street, postal code, and locality details.
 - Add a model-aware provider picker to the phone settings.
 - Fix current-location weather requests and back-to-back JSON tool calls.
+- Add light Markdown rendering for assistant replies and saved conversations.
 
 # 0.3.2
 
