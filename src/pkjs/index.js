@@ -214,12 +214,13 @@ function sendAssistantReply(reply, requestId) {
   }
 
   for (var i = 0; i < chunks.length; i++) {
-    sendToWatch({
+    var message = {
       Status: i === chunks.length - 1 ? 'Done' : 'Receiving...',
       AssistantResponse: chunks[i],
       ResponseChunkIndex: i,
       ResponseChunkDone: i === chunks.length - 1 ? 1 : 0
-    }, requestId);
+    };
+    sendToWatch(message, requestId);
   }
 }
 
@@ -1694,12 +1695,13 @@ function sendAssistantDelta(delta, chunkIndex, done, generation) {
   if (generation !== requestGeneration) {
     return;
   }
-  sendToWatch({
+  var message = {
     Status: done ? 'Done' : 'Receiving...',
     AssistantResponse: delta,
     ResponseChunkIndex: chunkIndex,
     ResponseChunkDone: done ? 1 : 0
-  }, currentRequestId);
+  };
+  sendToWatch(message, currentRequestId);
 }
 
 function formatReverseGeocodeAddress(json) {
@@ -2354,7 +2356,9 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
   }
 }
 
-function toolActivityLabel(name) {
+function toolActivityLabel(call) {
+  var name = call.name;
+  var args = call.arguments || {};
   var labels = {
     search: 'Brave Search',
     scrape: 'Firecrawl Scrape',
@@ -2366,7 +2370,23 @@ function toolActivityLabel(name) {
     memory: 'Memory',
     timeline: 'Timeline'
   };
-  return (labels[name] || name) + ' tool';
+  var label = (labels[name] || name) + ' tool';
+  if (name === 'weather' && args.place) {
+    return label + ': ' + clip(args.place, 60);
+  }
+  if (name === 'location') {
+    return label + ': phone GPS';
+  }
+  if (name === 'search' && args.query) {
+    return label + ': ' + clip(args.query, 60);
+  }
+  if (name === 'scrape' && args.url) {
+    return label + ': ' + clip(args.url, 60);
+  }
+  if (name === 'calculator' && args.expression) {
+    return label + ': ' + clip(args.expression, 60);
+  }
+  return label;
 }
 
 function executeToolBatch(calls, state, callback) {
@@ -2378,10 +2398,7 @@ function executeToolBatch(calls, state, callback) {
   var active = 0;
   var completed = 0;
 
-  sendToWatch({ Status: calls.length === 1 ? 'Using ' + calls[0].name + '...' : 'Using ' + calls.length + ' tools...' }, state.requestId);
-  for (var callIndex = 0; callIndex < calls.length; callIndex++) {
-    sendToWatch({ ToolActivity: toolActivityLabel(calls[callIndex].name) }, state.requestId);
-  }
+  sendToWatch({ Status: calls.length === 1 ? 'Starting tool...' : 'Starting tools...' }, state.requestId);
 
   function finishCall(index, result) {
     results[index] = result;
@@ -2395,6 +2412,11 @@ function executeToolBatch(calls, state, callback) {
   }
 
   function runCall(call, index) {
+    var activity = toolActivityLabel(call);
+    sendToWatch({
+      Status: 'Using ' + call.name + '...',
+      ToolActivity: activity
+    }, state.requestId);
     var cacheKey = call.name + ':' + JSON.stringify(call.arguments);
     if (state.toolCache[cacheKey]) {
       finishCall(index, state.toolCache[cacheKey]);
