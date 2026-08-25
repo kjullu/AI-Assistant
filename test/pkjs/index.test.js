@@ -324,6 +324,18 @@ test('current-location weather respects the Location setting', () => {
   assert.equal(runtime.requests.length, 0);
 });
 
+test('tool activity says when weather uses current-location GPS', () => {
+  const runtime = createRuntime();
+  assert.equal(
+    runtime.context.toolActivityLabel({ name: 'weather', arguments: { place: 'current location' } }),
+    'Weather tool: current location'
+  );
+  assert.equal(
+    runtime.context.toolActivityLabel({ name: 'location', arguments: {} }),
+    'Location tool: phone GPS'
+  );
+});
+
 test('calculator fetches and caches current currency rates', () => {
   const runtime = createRuntime();
   prompt(runtime, 'Convert ten euro to kroner');
@@ -457,8 +469,11 @@ test('parallel scrape results retain requested order', () => {
 
   assert.deepEqual(
     runtime.sentMessages.filter(message => message.ToolActivity).map(message => message.ToolActivity),
-    ['Firecrawl Scrape tool', 'Firecrawl Scrape tool']
+    ['Firecrawl Scrape tool: https://first.example', 'Firecrawl Scrape tool: https://second.example']
   );
+  const activityMessages = runtime.sentMessages.filter(message => message.ToolActivity);
+  assert.equal(activityMessages[0].Status, 'Using scrape...');
+  assert.equal(activityMessages[1].Status, 'Using scrape...');
 
   const scrapes = runtime.requests.filter(request => request.url && request.url.includes('firecrawl'));
   assert.equal(scrapes.length, 2);
@@ -475,6 +490,9 @@ test('parallel scrape results retain requested order', () => {
   assert.equal(toolMessages.length, 2);
   assert.match(toolMessages[0].content, /FIRST/);
   assert.match(toolMessages[1].content, /SECOND/);
+
+  streamTextResponse(modelRequests(runtime)[1], 'Comparison complete.');
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Comparison complete.'));
 });
 
 test('the same tool can run in consecutive rounds', () => {
