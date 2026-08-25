@@ -1005,9 +1005,24 @@ static void append_tool_activity_to_history(const char *tool) {
   if (!tool || !tool[0] || !s_current_ai_response_start) {
     return;
   }
-  append_chat_history(TOOL_HISTORY_PREFIX);
-  append_chat_history(tool);
-  append_chat_history("\n");
+
+  const char *line = tool;
+  while (*line) {
+    const char *line_end = strchr(line, '\n');
+    size_t line_length = line_end ? (size_t)(line_end - line) : strlen(line);
+    if (line_length > 0) {
+      append_chat_history(TOOL_HISTORY_PREFIX);
+      size_t current_len = strlen(s_chat_history);
+      size_t remaining = sizeof(s_chat_history) - current_len - 1;
+      size_t copy_length = line_length < remaining ? line_length : remaining;
+      strncat(s_chat_history, line, copy_length);
+      append_chat_history("\n");
+    }
+    if (!line_end) {
+      break;
+    }
+    line = line_end + 1;
+  }
   s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
   s_response_started = false;
 }
