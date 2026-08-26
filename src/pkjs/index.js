@@ -45,6 +45,7 @@ var MAX_TOOL_CALLS = 8;
 var MAX_TOOL_ROUNDS = 5;
 var MAX_PARALLEL_TOOLS = 3;
 var MAX_SEND_ATTEMPTS = 3;
+var WATCH_RENDER_GAP_MS = 150;
 var MAX_HISTORY_MESSAGES = 24;
 var CURRENCY_CACHE_MS = 12 * 60 * 60 * 1000;
 var REASONING_CAPABILITY_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -161,12 +162,6 @@ function showError(userMessage, detail) {
   sendToWatch({ Error: userMessage }, currentRequestId);
 }
 
-function sendRequestStatus(status, generation) {
-  if (generation === requestGeneration) {
-    sendToWatch({ Status: status }, currentRequestId);
-  }
-}
-
 function pumpSendQueue() {
   if (sendingItem || sendQueue.length === 0) {
     return;
@@ -176,10 +171,17 @@ function pumpSendQueue() {
   sendingItem.attempts++;
   var item = sendingItem;
   Pebble.sendAppMessage(item.dict, function() {
-    if (sendingItem === item) {
-      sendingItem = null;
+    function releaseQueue() {
+      if (sendingItem === item) {
+        sendingItem = null;
+      }
+      pumpSendQueue();
     }
-    pumpSendQueue();
+    if (WATCH_RENDER_GAP_MS > 0) {
+      setTimeout(releaseQueue, WATCH_RENDER_GAP_MS);
+    } else {
+      releaseQueue();
+    }
   }, function(e) {
     console.log('sendAppMessage failed: ' + JSON.stringify(e));
     if (sendingItem === item) {
@@ -203,7 +205,16 @@ function clip(text, maxLength) {
   return text.substring(0, maxLength);
 }
 
-function sendAssistantReply(reply, requestId) {
+function toolActivityHistoryText(toolActivity) {
+  if (!toolActivity) return '';
+  return String(toolActivity).split('\n').filter(function(line) {
+    return !!line;
+  }).map(function(line) {
+    return '[tool] ' + line;
+  }).join('\n') + '\n';
+}
+
+function sendAssistantReply(reply, requestId, toolActivity) {
   reply = String(reply || 'No response.');
   var chunks = [];
   for (var offset = 0; offset < reply.length; offset += RESPONSE_CHUNK_CHARS) {
@@ -216,7 +227,7 @@ function sendAssistantReply(reply, requestId) {
   for (var i = 0; i < chunks.length; i++) {
     var message = {
       Status: i === chunks.length - 1 ? 'Done' : 'Receiving...',
-      AssistantResponse: chunks[i],
+      AssistantResponse: (i === 0 ? toolActivityHistoryText(toolActivity) : '') + chunks[i],
       ResponseChunkIndex: i,
       ResponseChunkDone: i === chunks.length - 1 ? 1 : 0
     };
@@ -1273,7 +1284,6 @@ function runCurrencyConversion(calc, generation, callback) {
     return;
   }
 
-  sendRequestStatus('Getting exchange rate...', generation);
   var request = new XMLHttpRequest();
   trackRequest(request, generation);
   request.open('GET', FRANKFURTER_RATE_URL + encodeURIComponent(base) + '/' + encodeURIComponent(quote), true);
@@ -1518,10 +1528,7 @@ function runWeatherTool(weather, generation, callback) {
 
   var place = weather.place ? String(weather.place).replace(/^\s+|\s+$/g, '') : '';
   var timeframe = weather.timeframe || 'now';
-  sendRequestStatus('Getting weather...', generation);
-
   function doFetch(lat, lon, resolvedPlace) {
-    sendRequestStatus('Getting weather...', generation);
     var request = new XMLHttpRequest();
     trackRequest(request, generation);
     var url = OPENMETEO_FORECAST_URL +
@@ -1691,13 +1698,13 @@ function extractReplyFromPartialJson(content) {
   return result;
 }
 
-function sendAssistantDelta(delta, chunkIndex, done, generation) {
+function sendAssistantDelta(delta, chunkIndex, done, generation, toolActivity) {
   if (generation !== requestGeneration) {
     return;
   }
   var message = {
     Status: done ? 'Done' : 'Receiving...',
-    AssistantResponse: delta,
+    AssistantResponse: (chunkIndex === 0 ? toolActivityHistoryText(toolActivity) : '') + delta,
     ResponseChunkIndex: chunkIndex,
     ResponseChunkDone: done ? 1 : 0
   };
@@ -1789,7 +1796,6 @@ function runLocationTool(generation, callback) {
     return;
   }
 
-    sendRequestStatus('Getting location...', generation);
   navigator.geolocation.getCurrentPosition(function(pos) {
     if (generation !== requestGeneration) {
       return;
@@ -1884,7 +1890,7 @@ function callModel(messages, generation, callback) {
   })));
 }
 
-function callModelStream(messages, generation, callback) {
+function callModelStream(messages, generation, callback, toolActivity) {
   var apiKey = getSetting('OpenRouterApiKey', '');
   var model = getSetting('OpenRouterModel', DEFAULT_MODEL);
 
@@ -1964,7 +1970,7 @@ function callModelStream(messages, generation, callback) {
       var replySoFar = extractStreamableReply(fullContent);
       if (replySoFar.length > sentReplyLength) {
         var newText = replySoFar.substring(sentReplyLength);
-        sendAssistantDelta(newText, chunkIndex++, false, generation);
+        sendAssistantDelta(newText, chunkIndex++, false, generation, toolActivity);
         sentAnyChunk = true;
         sentReplyLength = replySoFar.length;
       }
@@ -2044,14 +2050,14 @@ function callModelStream(messages, generation, callback) {
     }
 
     if (!hasToolCalls && finalReply && !sentAnyChunk) {
-      sendAssistantDelta(finalReply, 0, true, generation);
+      sendAssistantDelta(finalReply, 0, true, generation, toolActivity);
       sentAnyChunk = true;
     } else if (!hasToolCalls && sentAnyChunk) {
       var missingText = finalReply.substring(sentReplyLength);
       if (missingText) {
-        sendAssistantDelta(missingText, chunkIndex++, false, generation);
+        sendAssistantDelta(missingText, chunkIndex++, false, generation, toolActivity);
       }
-      sendAssistantDelta('', chunkIndex, true, generation);
+      sendAssistantDelta('', chunkIndex, true, generation, toolActivity);
     }
 
     parsed.reply = finalReply || '';
@@ -2104,7 +2110,6 @@ function braveSearch(query, generation, callback) {
     return;
   }
 
-  sendRequestStatus('Searching...', generation);
   incrementStat('searches');
   sendStatsToWatch();
   var request = new XMLHttpRequest();
@@ -2170,7 +2175,6 @@ function firecrawlScrape(url, generation, callback) {
     return;
   }
 
-  sendRequestStatus('Scraping...', generation);
   incrementStat('searches');
   sendStatsToWatch();
   var request = new XMLHttpRequest();
@@ -2252,7 +2256,7 @@ function finishAssistantTurn(state, parsed, alreadySent) {
   }
 
   if (!alreadySent) {
-    sendAssistantReply(reply, state.requestId);
+    sendAssistantReply(reply, state.requestId, state.toolActivities.join('\n'));
   }
 
   saveCurrentSessionToConversationHistory();
@@ -2398,8 +2402,6 @@ function executeToolBatch(calls, state, callback) {
   var active = 0;
   var completed = 0;
 
-  sendToWatch({ Status: calls.length === 1 ? 'Starting tool...' : 'Starting tools...' }, state.requestId);
-
   function finishCall(index, result) {
     results[index] = result;
     active--;
@@ -2413,10 +2415,9 @@ function executeToolBatch(calls, state, callback) {
 
   function runCall(call, index) {
     var activity = toolActivityLabel(call);
-    sendToWatch({
-      Status: 'Using ' + call.name + '...',
-      ToolActivity: activity
-    }, state.requestId);
+    state.toolActivities.push(activity);
+    // A standalone activity replaces Thinking with a stable transcript line while the tool runs.
+    sendToWatch({ ToolActivity: activity }, state.requestId);
     var cacheKey = call.name + ':' + JSON.stringify(call.arguments);
     if (state.toolCache[cacheKey]) {
       finishCall(index, state.toolCache[cacheKey]);
@@ -2538,7 +2539,7 @@ function runAssistantRound(state) {
       }
       runAssistantRound(state);
     });
-  });
+  }, state.toolActivities.join('\n'));
 }
 
 function callOpenRouter(prompt, requestId) {
@@ -2571,6 +2572,7 @@ function callOpenRouter(prompt, requestId) {
     toolCallCount: 0,
     toolRounds: 0,
     toolCache: {},
+    toolActivities: [],
     pendingTools: {},
     executions: 0,
     forceFinal: false

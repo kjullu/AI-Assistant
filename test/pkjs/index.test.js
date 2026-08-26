@@ -74,6 +74,7 @@ function createRuntime(settings = {}) {
   };
   vm.createContext(context);
   vm.runInContext(source, context, { filename: 'src/pkjs/index.js' });
+  context.WATCH_RENDER_GAP_MS = 0;
 
   return {
     context,
@@ -384,7 +385,8 @@ test('Health tool requests watch data and resumes the model round', () => {
   assert.equal(followup.messages.at(-1).role, 'tool');
   assert.match(followup.messages.at(-1).content, /steps=4321/);
   streamResponse(modelRequests(runtime)[1], { toolCalls: [], reply: 'You took 4,321 steps today.' });
-  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'You took 4,321 steps today.'));
+  assert.ok(runtime.sentMessages.some(message =>
+    message.AssistantResponse === '[tool] Health tool\nYou took 4,321 steps today.'));
 });
 
 test('Health instructions are included only when enabled', () => {
@@ -409,7 +411,8 @@ test('stream fallback can continue into a tool round', () => {
 
   assert.equal(modelRequests(runtime).length, 3);
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'Four.' });
-  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Four.' && message.RequestId === 1));
+  assert.ok(runtime.sentMessages.some(message =>
+    message.AssistantResponse === '[tool] Calculator tool: 2+2\nFour.' && message.RequestId === 1));
 });
 
 test('choice answer resumes the turn with its original prompt', () => {
@@ -453,7 +456,8 @@ test('the same choice can be requested again in a later round', () => {
   assert.equal(runtime.sentMessages.filter(message => message.ChoiceQuestion === 'Pick').length, 2);
   runtime.listeners.appmessage({ payload: { ChoiceAnswer: 'B', RequestId: 5 } });
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'A then B.' });
-  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'A then B.'));
+  assert.ok(runtime.sentMessages.some(message =>
+    message.AssistantResponse === '[tool] Choice tool\n[tool] Choice tool\nA then B.'));
 });
 
 test('parallel scrape results retain requested order', () => {
@@ -472,8 +476,10 @@ test('parallel scrape results retain requested order', () => {
     ['Firecrawl Scrape tool: https://first.example', 'Firecrawl Scrape tool: https://second.example']
   );
   const activityMessages = runtime.sentMessages.filter(message => message.ToolActivity);
-  assert.equal(activityMessages[0].Status, 'Using scrape...');
-  assert.equal(activityMessages[1].Status, 'Using scrape...');
+  assert.equal(activityMessages[0].Status, undefined);
+  assert.equal(activityMessages[1].Status, undefined);
+  assert.equal(runtime.sentMessages.filter(message =>
+    /^(Starting tool|Using |Searching|Scraping|Getting )/.test(message.Status || '')).length, 0);
 
   const scrapes = runtime.requests.filter(request => request.url && request.url.includes('firecrawl'));
   assert.equal(scrapes.length, 2);
@@ -492,7 +498,9 @@ test('parallel scrape results retain requested order', () => {
   assert.match(toolMessages[1].content, /SECOND/);
 
   streamTextResponse(modelRequests(runtime)[1], 'Comparison complete.');
-  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Comparison complete.'));
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse ===
+    '[tool] Firecrawl Scrape tool: https://first.example\n' +
+    '[tool] Firecrawl Scrape tool: https://second.example\nComparison complete.'));
 });
 
 test('the same tool can run in consecutive rounds', () => {
@@ -505,7 +513,8 @@ test('the same tool can run in consecutive rounds', () => {
     toolCalls: [{ name: 'calculator', arguments: { expression: '3+3' } }], reply: ''
   });
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'Four and six.' });
-  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Four and six.'));
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse ===
+    '[tool] Calculator tool: 2+2\n[tool] Calculator tool: 3+3\nFour and six.'));
 });
 
 test('completed tool calls and results are retained in the next turn', () => {
@@ -588,6 +597,23 @@ test('cancelling a request does not let an in-flight send drop the cancellation 
   sends[0].success();
   assert.equal(sends.length, 2);
   assert.equal(sends[1].dict.Status, 'Cancelled');
+});
+
+test('successful AppMessages leave time for the watch to render before the queue advances', () => {
+  const runtime = createRuntime();
+  const sends = [];
+  runtime.context.WATCH_RENDER_GAP_MS = 150;
+  runtime.setSendHandler((dict, success, failure) => sends.push({ dict, success, failure }));
+
+  runtime.context.sendToWatch({ Status: 'First' });
+  runtime.context.sendToWatch({ Status: 'Second' });
+  sends[0].success();
+
+  assert.equal(sends.length, 1);
+  assert.equal(runtime.timers.length, 1);
+  runtime.timers.shift()();
+  assert.equal(sends.length, 2);
+  assert.equal(sends[1].dict.Status, 'Second');
 });
 
 test('an in-flight message from a cancelled request is not retried', () => {

@@ -4,7 +4,8 @@
 - Add a model-aware provider picker to the phone settings.
 - Fix current-location weather requests and back-to-back JSON tool calls.
 - Add light Markdown rendering for assistant replies and saved conversations.
-- Fix tool activity disappearing when an assistant starts multiple tools, thinks, or returns its final answer.
+- Fix each tool appearing only at the end by showing it when execution starts and retaining it above the final answer.
+- Fix rapid live updates outrunning the watch renderer and leaving blank space before the final response.
 - Update tool activity live as each tool starts and show location, weather, search, scrape, and calculation details.
 
 # 0.3.2

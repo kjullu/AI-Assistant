@@ -36,6 +36,7 @@
 #define CHAT_HISTORY_BUFFER_SIZE 14000
 #define STATS_BUFFER_SIZE 512
 #define TOOL_HISTORY_PREFIX "[tool] "
+#define REPLAY_PROMPT_PREFIX "replay-prompt:"
 
 // Pointers to Pebble UI/session objects created at runtime.
 static Window *s_window;
@@ -1023,7 +1024,6 @@ static void append_tool_activity_to_history(const char *tool) {
     }
     line = line_end + 1;
   }
-  s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
   s_response_started = false;
 }
 
@@ -1346,8 +1346,9 @@ static void layout_chat(bool scroll_to_bottom) {
       offset.y = min_y;
     }
     scroll_layer_set_content_offset(s_scroll_layer, offset, false);
-  } else if (scroll_to_bottom && content_height > bounds.size.h) {
-    scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, -(content_height - bounds.size.h)), false);
+  } else if (scroll_to_bottom) {
+    int16_t bottom_offset = content_height > bounds.size.h ? -(content_height - bounds.size.h) : 0;
+    scroll_layer_set_content_offset(s_scroll_layer, GPoint(0, bottom_offset), false);
   }
 }
 
@@ -1514,15 +1515,13 @@ static void update_display(const char *status) {
   layout_chat(true);
 }
 
-// Send the user's dictated text to PebbleKit JS on the phone.
-static void send_prompt(const char *prompt) {
-  // Ignore empty prompts so we do not send meaningless AppMessages.
+// Initialize the on-watch transcript state shared by real and replayed prompts.
+static bool begin_prompt_turn(const char *prompt, const char *status) {
   if (!prompt || !prompt[0]) {
     update_display("Nothing to send");
-    return;
+    return false;
   }
 
-  // Store the latest prompt locally and clear the previous assistant reply.
   snprintf(s_last_prompt, sizeof(s_last_prompt), "%s", prompt);
   s_assistant_response[0] = '\0';
   s_show_home = false;
@@ -1539,7 +1538,15 @@ static void send_prompt(const char *prompt) {
   append_chat_history(s_last_prompt);
   append_chat_history("\n\nAI\n");
   s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
-  update_display("Sending...");
+  update_display(status);
+  return true;
+}
+
+// Send the user's dictated text to PebbleKit JS on the phone.
+static void send_prompt(const char *prompt) {
+  if (!begin_prompt_turn(prompt, "Sending...")) {
+    return;
+  }
 
   // Start building an outgoing AppMessage dictionary.
   DictionaryIterator *iter;
@@ -1576,6 +1583,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *request_id_tuple = dict_find(iter, MESSAGE_KEY_RequestId);
   Tuple *health_request_tuple = dict_find(iter, MESSAGE_KEY_HealthRequest);
   Tuple *tool_activity_tuple = dict_find(iter, MESSAGE_KEY_ToolActivity);
+  Tuple *debug_log_tuple = dict_find(iter, MESSAGE_KEY_DebugLog);
+
+  // Developer replay initializes a real prompt turn without invoking phone-side AI.
+  if (debug_log_tuple && strncmp(debug_log_tuple->value->cstring, REPLAY_PROMPT_PREFIX,
+                                 strlen(REPLAY_PROMPT_PREFIX)) == 0) {
+    begin_prompt_turn(debug_log_tuple->value->cstring + strlen(REPLAY_PROMPT_PREFIX), "Thinking...");
+    return;
+  }
 
   // Responses from a cancelled or replaced turn must not leak into the current transcript.
   if (request_id_tuple && request_id_tuple->value->uint32 != s_active_request_id) {
@@ -1598,13 +1613,6 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   const char *status = "Ready";
   if (status_tuple) {
     status = status_tuple->value->cstring;
-    //AI: When a tool is running, reset the response flag so the real answer vibrates later.
-    if (strcmp(status, "Searching...") == 0 || strcmp(status, "Scraping...") == 0 ||
-        strcmp(status, "Calculating...") == 0 || strcmp(status, "Getting weather...") == 0 ||
-        strcmp(status, "Getting location...") == 0 || strcmp(status, "Getting exchange rate...") == 0 ||
-        strcmp(status, "Reading health...") == 0) {
-      s_response_started = false;
-    }
   }
 
   //USR: if response_tuple is true do:
