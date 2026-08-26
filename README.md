@@ -131,3 +131,11 @@ Run the PebbleKit JS regression tests with:
 ```sh
 npm test
 ```
+
+To replay the live watch transcript against a running emulator and capture every rendered state:
+
+```sh
+.venv/bin/python tools/replay_watch_stream.py --phone localhost:PORT
+```
+
+Use the pypkjs `--port` shown by `pebble install --emulator ...`. Screenshots are written to `build/watch-replay/`. Add `--no-captures` to exercise the same acknowledged AppMessage sequence at full speed.
