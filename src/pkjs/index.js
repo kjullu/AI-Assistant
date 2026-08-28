@@ -142,6 +142,16 @@ function cancelActiveRequests(notify, requestId) {
 }
 
 function sendToWatch(dict, requestId) {
+  var watchTextKeys = [
+    'AssistantResponse', 'ToolActivity', 'ChoiceQuestion', 'ChoiceOptions',
+    'Error', 'Status', 'StatsText'
+  ];
+  for (var i = 0; i < watchTextKeys.length; i++) {
+    var key = watchTextKeys[i];
+    if (typeof dict[key] === 'string') {
+      dict[key] = watchSafeText(dict[key]);
+    }
+  }
   if (requestId) {
     dict.RequestId = requestId;
   }
@@ -206,6 +216,32 @@ function clip(text, maxLength) {
   return text.substring(0, maxLength);
 }
 
+// Pebble's Gothic fonts cover useful accented text, but omit some punctuation
+// and mathematical glyphs that language models commonly produce. Keep the
+// original text everywhere else and use readable ASCII only at the watch edge.
+function watchSafeText(text) {
+  return String(text || '')
+    .replace(/[\u00a0\u2007\u202f]/g, ' ')
+    .replace(/[\u200b\u200c\u200d\u2060\ufeff\ufe0e\ufe0f]/g, '')
+    .replace(/[\u2611\u2705\u2713\u2714]/g, '[ok]')
+    .replace(/[\u2717\u2718\u274c\u274e]/g, '[x]')
+    .replace(/\u26a0/g, '[!]')
+    .replace(/[\ud800-\udbff][\udc00-\udfff]/g, '[emoji]')
+    .replace(/(?:\[emoji\]){2,}/g, '[emoji]')
+    .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+    .replace(/[\u201c\u201d\u201e\u201f]/g, '"')
+    .replace(/[\u2010\u2011\u2012\u2013\u2212]/g, '-')
+    .replace(/\u2014/g, '--')
+    .replace(/\u2026/g, '...')
+    .replace(/\u00d7/g, 'x')
+    .replace(/\u00f7/g, '/')
+    .replace(/\u00b1/g, '+/-')
+    .replace(/\u2264/g, '<=')
+    .replace(/\u2265/g, '>=')
+    .replace(/\u2260/g, '!=')
+    .replace(/\u2248/g, '~=');
+}
+
 function toolActivityHistoryText(toolActivity) {
   if (!toolActivity) return '';
   return String(toolActivity).split('\n').filter(function(line) {
@@ -216,7 +252,7 @@ function toolActivityHistoryText(toolActivity) {
 }
 
 function sendAssistantReply(reply, requestId, toolActivity) {
-  reply = String(reply || 'No response.');
+  reply = watchSafeText(reply || 'No response.');
   var chunks = [];
   for (var offset = 0; offset < reply.length; offset += RESPONSE_CHUNK_CHARS) {
     chunks.push(reply.substring(offset, offset + RESPONSE_CHUNK_CHARS));
