@@ -105,9 +105,17 @@ test('phone settings can reset the first-run notice on the watch', () => {
 });
 
 function streamResponse(request, value) {
-  const content = JSON.stringify(value);
+  const toolCalls = (value.toolCalls || []).map((call, index) => ({
+    index,
+    id: `call_test_${index}`,
+    type: 'function',
+    function: { name: call.name, arguments: JSON.stringify(call.arguments || {}) }
+  }));
+  const delta = {};
+  if (value.reply) delta.content = value.reply;
+  if (toolCalls.length) delta.tool_calls = toolCalls;
   request.status = 200;
-  request.responseText = `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n`;
+  request.responseText = `data: ${JSON.stringify({ choices: [{ delta }] })}\n\ndata: [DONE]\n`;
   if (request.onprogress) request.onprogress();
   request.onload();
 }
@@ -120,8 +128,13 @@ function streamTextResponse(request, content) {
 }
 
 function normalResponse(request, value) {
+  const toolCalls = (value.toolCalls || []).map((call, index) => ({
+    id: `call_test_${index}`,
+    type: 'function',
+    function: { name: call.name, arguments: JSON.stringify(call.arguments || {}) }
+  }));
   request.status = 200;
-  request.responseText = JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] });
+  request.responseText = JSON.stringify({ choices: [{ message: { content: value.reply || null, tool_calls: toolCalls } }] });
   request.onload();
 }
 
@@ -172,7 +185,7 @@ test('final answers stream as plain text without a JSON wrapper', () => {
   streamTextResponse(modelRequests(runtime)[0], 'Hello from Pebble.');
 
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Hello from Pebble.'));
-  assert.match(runtime.context.buildSystemPrompt(), /final watch-friendly answer as plain text/);
+  assert.match(runtime.context.buildSystemPrompt(), /watch-friendly answer as plain text/);
 });
 
 test('the system prompt advertises the Markdown supported by the watch', () => {
@@ -271,18 +284,111 @@ test('reasoning options follow OpenRouter model capabilities', () => {
   );
 });
 
-test('back-to-back JSON tool requests are parsed instead of shown as text', () => {
+test('enabled tools are sent as OpenAI-compatible function schemas', () => {
   const runtime = createRuntime();
-  const parsed = runtime.context.parseAssistantContent(
-    '{"toolCalls":[{"name":"location","arguments":{}}]}' +
-    '{"toolCalls":[{"name":"weather","arguments":{"place":"current location","timeframe":"today"}}]}' +
-    'Hvilken by eller sted vil du have vejret for?'
+  prompt(runtime, 'hello');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  const weather = body.tools.find(tool => tool.function.name === 'weather');
+  assert.equal(weather.type, 'function');
+  assert.deepEqual(weather.function.parameters.required, ['place', 'timeframe']);
+  assert.equal(weather.function.parameters.additionalProperties, false);
+  assert.equal(body.tools.some(tool => tool.function.name === 'location'), false);
+});
+
+test('streamed native tool-call fragments are assembled before execution', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'What is two plus two?');
+  const request = modelRequests(runtime)[0];
+  const chunks = [
+    { index: 0, id: 'call_fragmented', type: 'function', function: { name: 'calcu', arguments: '{"expression":"2' } },
+    { index: 0, function: { name: 'lator', arguments: '+2"}' } }
+  ];
+  request.status = 200;
+  request.responseText = chunks.map(toolCall =>
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [toolCall] } }] })}\n\n`
+  ).join('') + 'data: [DONE]\n';
+  request.onprogress();
+  request.onload();
+
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  const assistantCall = followup.messages.find(message => message.tool_calls);
+  const toolResult = followup.messages.find(message => message.role === 'tool');
+  assert.equal(assistantCall.tool_calls[0].id, 'call_fragmented');
+  assert.equal(assistantCall.tool_calls[0].function.name, 'calculator');
+  assert.deepEqual(JSON.parse(assistantCall.tool_calls[0].function.arguments), { expression: '2+2' });
+  assert.equal(toolResult.tool_call_id, 'call_fragmented');
+  assert.match(toolResult.content, /2\+2 = 4/);
+});
+
+test('malformed native tool arguments are returned as a matching tool error', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Calculate this');
+  const request = modelRequests(runtime)[0];
+  request.status = 200;
+  request.responseText = `data: ${JSON.stringify({ choices: [{
+    delta: { tool_calls: [{ index: 0, id: 'call_bad_json', type: 'function', function: { name: 'calculator', arguments: '{"expression":' } }] },
+    finish_reason: 'tool_calls'
+  }] })}\n\ndata: [DONE]\n`;
+  request.onprogress();
+  request.onload();
+
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  const assistantCall = followup.messages.find(message => message.tool_calls);
+  const toolResult = followup.messages.find(message => message.role === 'tool');
+  assert.equal(assistantCall.tool_calls[0].id, 'call_bad_json');
+  assert.equal(assistantCall.tool_calls[0].function.arguments, '{"expression":');
+  assert.equal(toolResult.tool_call_id, 'call_bad_json');
+  assert.match(toolResult.content, /Invalid JSON arguments/);
+  assert.equal(runtime.requests.some(candidate => candidate.url && candidate.url.includes('frankfurter')), false);
+});
+
+test('mixed streamed content and tool calls keeps the content and skips execution', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Say something and calculate');
+  const request = modelRequests(runtime)[0];
+  request.status = 200;
+  request.responseText = `data: ${JSON.stringify({ choices: [{
+    delta: {
+      content: 'I cannot complete that calculation.',
+      tool_calls: [{ index: 0, id: 'call_mixed', type: 'function', function: { name: 'calculator', arguments: '{"expression":"2+2"}' } }]
+    },
+    finish_reason: 'tool_calls'
+  }] })}\n\ndata: [DONE]\n`;
+  request.onprogress();
+  request.onload();
+
+  assert.equal(modelRequests(runtime).length, 1);
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'I cannot complete that calculation.'));
+  assert.match(runtime.storage.get('DebugLog'), /Mixed assistant content and tool calls/);
+});
+
+test('finish reasons are recorded for streamed and non-streaming responses', () => {
+  const streamingRuntime = createRuntime();
+  prompt(streamingRuntime, 'hello');
+  const streaming = modelRequests(streamingRuntime)[0];
+  streaming.status = 200;
+  streaming.responseText = `data: ${JSON.stringify({ choices: [{ delta: { content: 'Hi' }, finish_reason: 'length' }] })}\n\ndata: [DONE]\n`;
+  streaming.onprogress();
+  streaming.onload();
+  assert.match(streamingRuntime.storage.get('DebugLog'), /stream finish_reason=length/);
+
+  const normalRuntime = createRuntime();
+  normalRuntime.context.callModel([], [], normalRuntime.context.requestGeneration, () => {});
+  const normal = modelRequests(normalRuntime)[0];
+  normal.status = 200;
+  normal.responseText = JSON.stringify({ choices: [{ message: { content: 'Hi' }, finish_reason: 'stop' }] });
+  normal.onload();
+  assert.match(normalRuntime.storage.get('DebugLog'), /callModel finish_reason=stop/);
+});
+
+test('native tool rejection produces a compatibility error', () => {
+  const runtime = createRuntime();
+  const recognized = runtime.context.showModelToolCompatibilityError(
+    404,
+    '{"error":{"message":"No endpoints found that support tool use"}}'
   );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(parsed.toolCalls)).map(call => call.name),
-    ['location', 'weather']
-  );
-  assert.equal(parsed.reply, 'Hvilken by eller sted vil du have vejret for?');
+  assert.equal(recognized, true);
+  assert.ok(runtime.sentMessages.some(message => /does not support tools/.test(message.Error || '')));
 });
 
 test('current-location weather uses phone coordinates without geocoding a place name', () => {
@@ -372,12 +478,10 @@ test('calculator fetches and caches current currency rates', () => {
   const assistantCall = followup.messages.at(-2);
   const toolResult = followup.messages.at(-1);
   assert.equal(assistantCall.role, 'assistant');
-  assert.deepEqual(JSON.parse(assistantCall.content), {
-    toolCalls: [{ name: 'calculator', arguments: { value: 10, from: 'EUR', to: 'DKK' } }]
-  });
-  assert.equal(assistantCall.tool_calls, undefined);
-  assert.equal(toolResult.role, 'user');
-  assert.equal(toolResult.tool_call_id, undefined);
+  assert.equal(assistantCall.content, null);
+  assert.equal(assistantCall.tool_calls[0].function.name, 'calculator');
+  assert.equal(toolResult.role, 'tool');
+  assert.equal(toolResult.tool_call_id, assistantCall.tool_calls[0].id);
   assert.match(toolResult.content, /74\.834 DKK/);
   assert.ok(runtime.storage.has('CurrencyRate:EUR:DKK'));
 
@@ -402,8 +506,8 @@ test('Health tool requests watch data and resumes the model round', () => {
     payload: { HealthData: 'Watch Health data for today: steps=4321;', RequestId: 12 }
   });
   const followup = JSON.parse(modelRequests(runtime)[1].body);
-  assert.equal(followup.messages.at(-1).role, 'user');
-  assert.match(followup.messages.at(-1).content, /Tool result for the preceding JSON request/);
+  assert.equal(followup.messages.at(-1).role, 'tool');
+  assert.ok(followup.messages.at(-1).tool_call_id);
   assert.match(followup.messages.at(-1).content, /steps=4321/);
   streamResponse(modelRequests(runtime)[1], { toolCalls: [], reply: 'You took 4,321 steps today.' });
   const historyChunk = runtime.sentMessages.find(message => message.AssistantResponse === '[tool] Health tool\n');
@@ -413,10 +517,11 @@ test('Health tool requests watch data and resumes the model round', () => {
 });
 
 test('Health instructions are included only when enabled', () => {
-  assert.doesNotMatch(createRuntime().context.buildSystemPrompt(), /Health tool/);
+  assert.equal(createRuntime().context.buildToolDefinitions().some(tool => tool.function.name === 'health'), false);
   const promptText = createRuntime({ EnableHealth: '1' }).context.buildSystemPrompt();
-  assert.match(promptText, /Health tool/);
+  assert.match(promptText, /Use Health/);
   assert.match(promptText, /average\/minimum\/maximum heart rate/);
+  assert.equal(createRuntime({ EnableHealth: '1' }).context.buildToolDefinitions().some(tool => tool.function.name === 'health'), true);
 });
 
 test('stream fallback can continue into a tool round', () => {
@@ -518,8 +623,7 @@ test('parallel scrape results retain requested order', () => {
   scrapes[0].onload();
 
   const followupBody = JSON.parse(modelRequests(runtime)[1].body);
-  const toolMessages = followupBody.messages.filter(message =>
-    message.role === 'user' && /Tool result for the preceding JSON request/.test(message.content || ''));
+  const toolMessages = followupBody.messages.filter(message => message.role === 'tool');
   assert.equal(toolMessages.length, 2);
   assert.match(toolMessages[0].content, /FIRST/);
   assert.match(toolMessages[1].content, /SECOND/);
@@ -546,7 +650,7 @@ test('the same tool can run in consecutive rounds', () => {
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Four and six.'));
 });
 
-test('completed tool calls retain the JSON text protocol in the next turn', () => {
+test('completed native tool calls and results are retained in the next turn', () => {
   const runtime = createRuntime();
   prompt(runtime, 'What is two plus two?', 1);
   streamResponse(modelRequests(runtime)[0], {
@@ -556,13 +660,11 @@ test('completed tool calls retain the JSON text protocol in the next turn', () =
 
   prompt(runtime, 'What did you calculate?', 2);
   const nextTurn = JSON.parse(modelRequests(runtime)[2].body);
-  const assistantToolCall = nextTurn.messages.find(message =>
-    message.role === 'assistant' && /"toolCalls"/.test(message.content || ''));
-  const toolResult = nextTurn.messages.find(message =>
-    message.role === 'user' && /Tool result for the preceding JSON request/.test(message.content || ''));
+  const assistantToolCall = nextTurn.messages.find(message => message.role === 'assistant' && message.tool_calls);
+  const toolResult = nextTurn.messages.find(message => message.role === 'tool');
 
-  assert.equal(JSON.parse(assistantToolCall.content).toolCalls[0].name, 'calculator');
-  assert.equal(nextTurn.messages.some(message => message.tool_calls || message.role === 'tool'), false);
+  assert.equal(assistantToolCall.tool_calls[0].function.name, 'calculator');
+  assert.equal(toolResult.tool_call_id, assistantToolCall.tool_calls[0].id);
   assert.match(toolResult.content, /2\+2 = 4/);
   assert.ok(nextTurn.messages.some(message => message.role === 'assistant' && message.content === 'It is four.'));
 });
@@ -579,11 +681,10 @@ test('identical calls in one batch share one tool execution', () => {
   scrapes[0].responseText = JSON.stringify({ success: true, data: { markdown: 'SHARED' } });
   scrapes[0].onload();
   const followupBody = JSON.parse(modelRequests(runtime)[1].body);
-  const toolMessages = followupBody.messages.filter(message =>
-    message.role === 'user' && /Tool result for the preceding JSON request/.test(message.content || ''));
+  const toolMessages = followupBody.messages.filter(message => message.role === 'tool');
   assert.equal(toolMessages.length, 2);
   assert.ok(toolMessages.every(message => /SHARED/.test(message.content)));
-  assert.ok(toolMessages.every(message => message.tool_call_id === undefined));
+  assert.notEqual(toolMessages[0].tool_call_id, toolMessages[1].tool_call_id);
 });
 
 test('tool execution stops after five rounds', () => {
