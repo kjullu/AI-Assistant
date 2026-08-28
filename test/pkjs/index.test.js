@@ -320,6 +320,77 @@ test('streamed native tool-call fragments are assembled before execution', () =>
   assert.match(toolResult.content, /2\+2 = 4/);
 });
 
+test('malformed native tool arguments are returned as a matching tool error', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Calculate this');
+  const request = modelRequests(runtime)[0];
+  request.status = 200;
+  request.responseText = `data: ${JSON.stringify({ choices: [{
+    delta: { tool_calls: [{ index: 0, id: 'call_bad_json', type: 'function', function: { name: 'calculator', arguments: '{"expression":' } }] },
+    finish_reason: 'tool_calls'
+  }] })}\n\ndata: [DONE]\n`;
+  request.onprogress();
+  request.onload();
+
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  const assistantCall = followup.messages.find(message => message.tool_calls);
+  const toolResult = followup.messages.find(message => message.role === 'tool');
+  assert.equal(assistantCall.tool_calls[0].id, 'call_bad_json');
+  assert.equal(assistantCall.tool_calls[0].function.arguments, '{"expression":');
+  assert.equal(toolResult.tool_call_id, 'call_bad_json');
+  assert.match(toolResult.content, /Invalid JSON arguments/);
+  assert.equal(runtime.requests.some(candidate => candidate.url && candidate.url.includes('frankfurter')), false);
+});
+
+test('mixed streamed content and tool calls keeps the content and skips execution', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Say something and calculate');
+  const request = modelRequests(runtime)[0];
+  request.status = 200;
+  request.responseText = `data: ${JSON.stringify({ choices: [{
+    delta: {
+      content: 'I cannot complete that calculation.',
+      tool_calls: [{ index: 0, id: 'call_mixed', type: 'function', function: { name: 'calculator', arguments: '{"expression":"2+2"}' } }]
+    },
+    finish_reason: 'tool_calls'
+  }] })}\n\ndata: [DONE]\n`;
+  request.onprogress();
+  request.onload();
+
+  assert.equal(modelRequests(runtime).length, 1);
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'I cannot complete that calculation.'));
+  assert.match(runtime.storage.get('DebugLog'), /Mixed assistant content and tool calls/);
+});
+
+test('finish reasons are recorded for streamed and non-streaming responses', () => {
+  const streamingRuntime = createRuntime();
+  prompt(streamingRuntime, 'hello');
+  const streaming = modelRequests(streamingRuntime)[0];
+  streaming.status = 200;
+  streaming.responseText = `data: ${JSON.stringify({ choices: [{ delta: { content: 'Hi' }, finish_reason: 'length' }] })}\n\ndata: [DONE]\n`;
+  streaming.onprogress();
+  streaming.onload();
+  assert.match(streamingRuntime.storage.get('DebugLog'), /stream finish_reason=length/);
+
+  const normalRuntime = createRuntime();
+  normalRuntime.context.callModel([], [], normalRuntime.context.requestGeneration, () => {});
+  const normal = modelRequests(normalRuntime)[0];
+  normal.status = 200;
+  normal.responseText = JSON.stringify({ choices: [{ message: { content: 'Hi' }, finish_reason: 'stop' }] });
+  normal.onload();
+  assert.match(normalRuntime.storage.get('DebugLog'), /callModel finish_reason=stop/);
+});
+
+test('native tool rejection produces a compatibility error', () => {
+  const runtime = createRuntime();
+  const recognized = runtime.context.showModelToolCompatibilityError(
+    404,
+    '{"error":{"message":"No endpoints found that support tool use"}}'
+  );
+  assert.equal(recognized, true);
+  assert.ok(runtime.sentMessages.some(message => /does not support tools/.test(message.Error || '')));
+});
+
 test('current-location weather uses phone coordinates without geocoding a place name', () => {
   const runtime = createRuntime({ EnableLocation: '1' });
   runtime.context.navigator.geolocation = {
