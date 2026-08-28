@@ -372,9 +372,12 @@ test('calculator fetches and caches current currency rates', () => {
   const assistantCall = followup.messages.at(-2);
   const toolResult = followup.messages.at(-1);
   assert.equal(assistantCall.role, 'assistant');
-  assert.equal(assistantCall.tool_calls[0].function.name, 'calculator');
-  assert.equal(toolResult.role, 'tool');
-  assert.equal(toolResult.tool_call_id, assistantCall.tool_calls[0].id);
+  assert.deepEqual(JSON.parse(assistantCall.content), {
+    toolCalls: [{ name: 'calculator', arguments: { value: 10, from: 'EUR', to: 'DKK' } }]
+  });
+  assert.equal(assistantCall.tool_calls, undefined);
+  assert.equal(toolResult.role, 'user');
+  assert.equal(toolResult.tool_call_id, undefined);
   assert.match(toolResult.content, /74\.834 DKK/);
   assert.ok(runtime.storage.has('CurrencyRate:EUR:DKK'));
 
@@ -399,7 +402,8 @@ test('Health tool requests watch data and resumes the model round', () => {
     payload: { HealthData: 'Watch Health data for today: steps=4321;', RequestId: 12 }
   });
   const followup = JSON.parse(modelRequests(runtime)[1].body);
-  assert.equal(followup.messages.at(-1).role, 'tool');
+  assert.equal(followup.messages.at(-1).role, 'user');
+  assert.match(followup.messages.at(-1).content, /Tool result for the preceding JSON request/);
   assert.match(followup.messages.at(-1).content, /steps=4321/);
   streamResponse(modelRequests(runtime)[1], { toolCalls: [], reply: 'You took 4,321 steps today.' });
   assert.ok(runtime.sentMessages.some(message =>
@@ -509,7 +513,8 @@ test('parallel scrape results retain requested order', () => {
   scrapes[0].onload();
 
   const followupBody = JSON.parse(modelRequests(runtime)[1].body);
-  const toolMessages = followupBody.messages.filter(message => message.role === 'tool');
+  const toolMessages = followupBody.messages.filter(message =>
+    message.role === 'user' && /Tool result for the preceding JSON request/.test(message.content || ''));
   assert.equal(toolMessages.length, 2);
   assert.match(toolMessages[0].content, /FIRST/);
   assert.match(toolMessages[1].content, /SECOND/);
@@ -534,7 +539,7 @@ test('the same tool can run in consecutive rounds', () => {
     '[tool] Calculator tool: 2+2\n[tool] Calculator tool: 3+3\nFour and six.'));
 });
 
-test('completed tool calls and results are retained in the next turn', () => {
+test('completed tool calls retain the JSON text protocol in the next turn', () => {
   const runtime = createRuntime();
   prompt(runtime, 'What is two plus two?', 1);
   streamResponse(modelRequests(runtime)[0], {
@@ -544,11 +549,13 @@ test('completed tool calls and results are retained in the next turn', () => {
 
   prompt(runtime, 'What did you calculate?', 2);
   const nextTurn = JSON.parse(modelRequests(runtime)[2].body);
-  const assistantToolCall = nextTurn.messages.find(message => message.role === 'assistant' && message.tool_calls);
-  const toolResult = nextTurn.messages.find(message => message.role === 'tool');
+  const assistantToolCall = nextTurn.messages.find(message =>
+    message.role === 'assistant' && /"toolCalls"/.test(message.content || ''));
+  const toolResult = nextTurn.messages.find(message =>
+    message.role === 'user' && /Tool result for the preceding JSON request/.test(message.content || ''));
 
-  assert.equal(assistantToolCall.tool_calls[0].function.name, 'calculator');
-  assert.equal(toolResult.tool_call_id, assistantToolCall.tool_calls[0].id);
+  assert.equal(JSON.parse(assistantToolCall.content).toolCalls[0].name, 'calculator');
+  assert.equal(nextTurn.messages.some(message => message.tool_calls || message.role === 'tool'), false);
   assert.match(toolResult.content, /2\+2 = 4/);
   assert.ok(nextTurn.messages.some(message => message.role === 'assistant' && message.content === 'It is four.'));
 });
@@ -565,10 +572,11 @@ test('identical calls in one batch share one tool execution', () => {
   scrapes[0].responseText = JSON.stringify({ success: true, data: { markdown: 'SHARED' } });
   scrapes[0].onload();
   const followupBody = JSON.parse(modelRequests(runtime)[1].body);
-  const toolMessages = followupBody.messages.filter(message => message.role === 'tool');
+  const toolMessages = followupBody.messages.filter(message =>
+    message.role === 'user' && /Tool result for the preceding JSON request/.test(message.content || ''));
   assert.equal(toolMessages.length, 2);
   assert.ok(toolMessages.every(message => /SHARED/.test(message.content)));
-  assert.notEqual(toolMessages[0].tool_call_id, toolMessages[1].tool_call_id);
+  assert.ok(toolMessages.every(message => message.tool_call_id === undefined));
 });
 
 test('tool execution stops after five rounds', () => {
