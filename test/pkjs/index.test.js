@@ -678,6 +678,47 @@ test('tool history and reply text use separate response chunks', () => {
   ]);
 });
 
+test('watch text replaces common missing font glyphs without stripping supported text', () => {
+  const runtime = createRuntime();
+
+  assert.equal(
+    runtime.context.watchSafeText('Danish: æøå • 2× H100 “fast” €10–20 ≤ 5…\ufe0f'),
+    'Danish: æøå • 2x H100 "fast" €10-20 <= 5...'
+  );
+});
+
+test('watch text gives unsupported emoji and status symbols readable fallbacks', () => {
+  const runtime = createRuntime();
+
+  assert.equal(
+    runtime.context.watchSafeText('✅ Ready ⚠\ufe0f Careful ❌ Failed 🚀🔥'),
+    '[ok] Ready [!] Careful [x] Failed [emoji]'
+  );
+});
+
+test('complete replies are normalized before response chunking', () => {
+  const runtime = createRuntime();
+  runtime.context.RESPONSE_CHUNK_CHARS = 8;
+
+  runtime.context.sendAssistantReply('A… 8× H100', 7, 'Math ≥ 1');
+
+  assert.equal(
+    runtime.sentMessages.map(message => message.AssistantResponse).join(''),
+    '[tool] Math >= 1\nA... 8x H100'
+  );
+  assert.ok(runtime.sentMessages.slice(1).every(message => message.AssistantResponse.length <= 8));
+});
+
+test('streamed reply chunks are normalized at the watch boundary', () => {
+  const runtime = createRuntime();
+  runtime.context.currentRequestId = 7;
+  runtime.context.requestGeneration = 3;
+
+  runtime.context.sendAssistantDelta('1× B200 ± ≠', 0, false, 3);
+
+  assert.equal(runtime.sentMessages[0].AssistantResponse, '1x B200 +/- !=');
+});
+
 test('an in-flight message from a cancelled request is not retried', () => {
   const runtime = createRuntime();
   const sends = [];
