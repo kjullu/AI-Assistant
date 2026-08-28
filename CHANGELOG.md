@@ -1,5 +1,6 @@
 # 0.3.3-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
 
+- Normalize unsupported punctuation and emoji into readable watch-safe text.
 - Improve location results with fresher high-accuracy coordinates and street, postal code, and locality details.
 - Add a model-aware provider picker to the phone settings.
 - Fix current-location weather requests and back-to-back JSON tool calls.
