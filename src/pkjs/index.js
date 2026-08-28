@@ -1759,11 +1759,27 @@ function parseNativeToolCalls(rawCalls) {
       args = fn.arguments ? JSON.parse(fn.arguments) : {};
     } catch (err) {
       debugLog('Invalid tool arguments for ' + String(fn.name || 'unknown') + ': ' + err.message);
+      calls.push({
+        id: raw.id || '',
+        name: fn.name || '',
+        arguments: {},
+        rawArguments: fn.arguments || '',
+        argumentError: 'Invalid JSON arguments: ' + err.message
+      });
       continue;
     }
     calls.push({ id: raw.id || '', name: fn.name || '', arguments: args });
   }
   return calls;
+}
+
+function showModelToolCompatibilityError(status, responseText) {
+  var detail = clip(String(responseText || ''), 500);
+  if (/no endpoints?[^.]*support[^.]*(?:tool|function)|does not support[^.]*(?:tool|function)|unsupported[^.]*(?:tool|function)|(?:tools?|functions?)[^.]*not supported|invalid[^.]*(?:tools?|functions?)/i.test(detail)) {
+    showError('This model or provider does not support tools.', 'OpenRouter rejected native tools (' + status + '): ' + detail);
+    return true;
+  }
+  return false;
 }
 
 function callModel(messages, tools, generation, callback) {
@@ -1793,17 +1809,25 @@ function callModel(messages, tools, generation, callback) {
       return;
     }
     if (request.status < 200 || request.status >= 300) {
-      showError('OpenRouter failed (' + request.status + ').', clip(request.responseText, 500));
+      if (!showModelToolCompatibilityError(request.status, request.responseText)) {
+        showError('OpenRouter failed (' + request.status + ').', clip(request.responseText, 500));
+      }
       return;
     }
 
     try {
       var json = JSON.parse(request.responseText);
       addUsageStats(json.usage);
-      var message = json.choices[0].message || {};
+      var choice = json.choices[0] || {};
+      var message = choice.message || {};
       var content = message.content || '';
-      debugLog('callModel content len=' + String(content || '').length);
-      callback({ reply: content, toolCalls: parseNativeToolCalls(message.tool_calls) });
+      var toolCalls = parseNativeToolCalls(message.tool_calls);
+      debugLog('callModel finish_reason=' + String(choice.finish_reason || 'unknown') + ' contentLen=' + String(content || '').length + ' toolCalls=' + toolCalls.length);
+      if (content && toolCalls.length) {
+        debugLog('Mixed assistant content and tool calls; ignoring tool calls');
+        toolCalls = [];
+      }
+      callback({ reply: content, toolCalls: toolCalls });
     } catch (err) {
       showError('Bad AI response.', err.message);
     }
@@ -1857,6 +1881,7 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
   var sentAnyChunk = false;
   var fallbackStarted = false;
   var streamWatchdog = null;
+  var finishReason = null;
 
   if (historyText) {
     sendAssistantDelta(historyText, 0, false, generation);
@@ -1901,7 +1926,12 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
         addUsageStats(json.usage);
         debugLog('stream usage total=' + json.usage.total_tokens + ' cost=' + json.usage.cost);
       }
-      var delta = json.choices && json.choices[0] && json.choices[0].delta;
+      var choice = json.choices && json.choices[0];
+      if (choice && choice.finish_reason) {
+        finishReason = choice.finish_reason;
+        debugLog('stream finish_reason=' + finishReason);
+      }
+      var delta = choice && choice.delta;
       var contentDelta = delta && delta.content ? delta.content : '';
       var toolCallDeltas = delta && delta.tool_calls ? delta.tool_calls : [];
       for (var i = 0; i < toolCallDeltas.length; i++) {
@@ -1992,7 +2022,9 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
       return;
     }
     if (request.status < 200 || request.status >= 300) {
-      showError('OpenRouter failed (' + request.status + ').', clip(request.responseText, 500));
+      if (!showModelToolCompatibilityError(request.status, request.responseText)) {
+        showError('OpenRouter failed (' + request.status + ').', clip(request.responseText, 500));
+      }
       return;
     }
 
@@ -2005,6 +2037,11 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
     var parsed = { reply: fullContent, toolCalls: parseNativeToolCalls(streamedToolCalls) };
     var finalReply = parsed.reply;
     var hasToolCalls = parsed.toolCalls.length > 0;
+    if (finalReply && hasToolCalls) {
+      debugLog('Mixed assistant content and tool calls; ignoring tool calls finish_reason=' + String(finishReason || 'unknown'));
+      parsed.toolCalls = [];
+      hasToolCalls = false;
+    }
     if (!finalReply && !hasToolCalls) {
       finalReply = 'No response.';
     }
@@ -2395,6 +2432,16 @@ function executeToolBatch(calls, state, callback) {
       return;
     }
 
+    if (call.argumentError) {
+      finishCall(index, {
+        name: call.name,
+        arguments: call.arguments,
+        ok: false,
+        content: call.argumentError
+      });
+      return;
+    }
+
     state.pendingTools[cacheKey] = [];
     var executionId = 'r' + state.requestId + '-c' + (state.executions++);
     executeNamedTool(call, state.generation, state.requestId, executionId, function(content, error) {
@@ -2438,7 +2485,9 @@ function normalizeToolCalls(rawCalls) {
     calls.push({
       id: raw.id || '',
       name: raw.name.toLowerCase().replace(/^\s+|\s+$/g, ''),
-      arguments: raw.arguments && typeof raw.arguments === 'object' ? raw.arguments : {}
+      arguments: raw.arguments && typeof raw.arguments === 'object' ? raw.arguments : {},
+      rawArguments: raw.rawArguments,
+      argumentError: raw.argumentError || ''
     });
   }
   return calls;
@@ -2483,7 +2532,10 @@ function runAssistantRound(state) {
         assistantToolCalls.push({
           id: calls[j].id || ('call_' + state.requestId + '_' + state.toolRounds + '_' + j),
           type: 'function',
-          function: { name: calls[j].name, arguments: JSON.stringify(calls[j].arguments) }
+          function: {
+            name: calls[j].name,
+            arguments: calls[j].rawArguments === undefined ? JSON.stringify(calls[j].arguments) : calls[j].rawArguments
+          }
         });
       }
       var assistantToolMessage = { role: 'assistant', content: null, tool_calls: assistantToolCalls };
