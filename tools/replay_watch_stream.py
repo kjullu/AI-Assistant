@@ -41,7 +41,7 @@ def load_project():
     with (ROOT / "build/js/message_keys.json").open(encoding="utf-8") as handle:
         keys = json.load(handle)
     required = {
-        "DebugLog",
+        "ReplayPrompt",
         "ToolActivity",
         "Status",
         "AssistantResponse",
@@ -79,7 +79,7 @@ def main():
     sequence = [
         (
             "01-thinking",
-            {keys["DebugLog"]: CString("replay-prompt:Find the weather and calculate 12 times 7")},
+            {keys["ReplayPrompt"]: CString("Find the weather and calculate 12 times 7")},
         ),
         ("02-tool-one", {keys["ToolActivity"]: CString(tools[0])}),
         ("03-tool-two", {keys["ToolActivity"]: CString(tools[1])}),
@@ -150,7 +150,8 @@ def main():
                     time.sleep(0.5)
             if not accepted:
                 raise RuntimeError("Watch {} {} after 3 attempts".format(last_outcome, name))
-            time.sleep(args.delay)
+            if not args.no_captures:
+                time.sleep(args.delay)
             if not args.no_captures:
                 save_screenshot(pebble, args.capture_dir / (name + ".png"))
             print(name)

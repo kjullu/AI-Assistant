@@ -406,8 +406,10 @@ test('Health tool requests watch data and resumes the model round', () => {
   assert.match(followup.messages.at(-1).content, /Tool result for the preceding JSON request/);
   assert.match(followup.messages.at(-1).content, /steps=4321/);
   streamResponse(modelRequests(runtime)[1], { toolCalls: [], reply: 'You took 4,321 steps today.' });
-  assert.ok(runtime.sentMessages.some(message =>
-    message.AssistantResponse === '[tool] Health tool\nYou took 4,321 steps today.'));
+  const historyChunk = runtime.sentMessages.find(message => message.AssistantResponse === '[tool] Health tool\n');
+  const answerChunk = runtime.sentMessages.find(message => message.AssistantResponse === 'You took 4,321 steps today.');
+  assert.equal(historyChunk.ResponseChunkIndex, 0);
+  assert.equal(answerChunk.ResponseChunkIndex, 1);
 });
 
 test('Health instructions are included only when enabled', () => {
@@ -433,7 +435,9 @@ test('stream fallback can continue into a tool round', () => {
   assert.equal(modelRequests(runtime).length, 3);
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'Four.' });
   assert.ok(runtime.sentMessages.some(message =>
-    message.AssistantResponse === '[tool] Calculator tool: 2+2\nFour.' && message.RequestId === 1));
+    message.AssistantResponse === '[tool] Calculator tool: 2+2\n' && message.RequestId === 1));
+  assert.ok(runtime.sentMessages.some(message =>
+    message.AssistantResponse === 'Four.' && message.RequestId === 1));
 });
 
 test('choice answer resumes the turn with its original prompt', () => {
@@ -478,7 +482,8 @@ test('the same choice can be requested again in a later round', () => {
   runtime.listeners.appmessage({ payload: { ChoiceAnswer: 'B', RequestId: 5 } });
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'A then B.' });
   assert.ok(runtime.sentMessages.some(message =>
-    message.AssistantResponse === '[tool] Choice tool\n[tool] Choice tool\nA then B.'));
+    message.AssistantResponse === '[tool] Choice tool\n[tool] Choice tool\n'));
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'A then B.'));
 });
 
 test('parallel scrape results retain requested order', () => {
@@ -522,7 +527,8 @@ test('parallel scrape results retain requested order', () => {
   streamTextResponse(modelRequests(runtime)[1], 'Comparison complete.');
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse ===
     '[tool] Firecrawl Scrape tool: https://first.example\n' +
-    '[tool] Firecrawl Scrape tool: https://second.example\nComparison complete.'));
+    '[tool] Firecrawl Scrape tool: https://second.example\n'));
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Comparison complete.'));
 });
 
 test('the same tool can run in consecutive rounds', () => {
@@ -536,7 +542,8 @@ test('the same tool can run in consecutive rounds', () => {
   });
   streamResponse(modelRequests(runtime)[2], { toolCalls: [], reply: 'Four and six.' });
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse ===
-    '[tool] Calculator tool: 2+2\n[tool] Calculator tool: 3+3\nFour and six.'));
+    '[tool] Calculator tool: 2+2\n[tool] Calculator tool: 3+3\n'));
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Four and six.'));
 });
 
 test('completed tool calls retain the JSON text protocol in the next turn', () => {
@@ -624,13 +631,13 @@ test('cancelling a request does not let an in-flight send drop the cancellation 
   assert.equal(sends[1].dict.Status, 'Cancelled');
 });
 
-test('successful AppMessages leave time for the watch to render before the queue advances', () => {
+test('successful render AppMessages leave time for the watch before the queue advances', () => {
   const runtime = createRuntime();
   const sends = [];
   runtime.context.WATCH_RENDER_GAP_MS = 150;
   runtime.setSendHandler((dict, success, failure) => sends.push({ dict, success, failure }));
 
-  runtime.context.sendToWatch({ Status: 'First' });
+  runtime.context.sendToWatch({ AssistantResponse: 'First' });
   runtime.context.sendToWatch({ Status: 'Second' });
   sends[0].success();
 
@@ -639,6 +646,36 @@ test('successful AppMessages leave time for the watch to render before the queue
   runtime.timers.shift()();
   assert.equal(sends.length, 2);
   assert.equal(sends[1].dict.Status, 'Second');
+});
+
+test('successful non-render AppMessages advance the queue immediately', () => {
+  const runtime = createRuntime();
+  const sends = [];
+  runtime.context.WATCH_RENDER_GAP_MS = 150;
+  runtime.setSendHandler((dict, success, failure) => sends.push({ dict, success, failure }));
+
+  runtime.context.sendToWatch({ StatsText: 'First' });
+  runtime.context.sendToWatch({ Status: 'Second' });
+  sends[0].success();
+
+  assert.equal(runtime.timers.length, 0);
+  assert.equal(sends.length, 2);
+  assert.equal(sends[1].dict.Status, 'Second');
+});
+
+test('tool history and reply text use separate response chunks', () => {
+  const runtime = createRuntime();
+
+  runtime.context.sendAssistantReply('Answer', 7, 'Calculator tool: 2+2');
+
+  assert.deepEqual(runtime.sentMessages.map(message => ({
+    text: message.AssistantResponse,
+    index: message.ResponseChunkIndex,
+    done: message.ResponseChunkDone
+  })), [
+    { text: '[tool] Calculator tool: 2+2\n', index: 0, done: 0 },
+    { text: 'Answer', index: 1, done: 1 }
+  ]);
 });
 
 test('an in-flight message from a cancelled request is not retried', () => {

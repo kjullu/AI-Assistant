@@ -11,6 +11,7 @@
 - Add a one-time first-run notice with a clear Early access heading and directions to support and control documentation.
 - Add a phone-setting control that shows the first-run notice again on the next watch-app launch.
 - Update tool activity live as each tool starts and show location, weather, search, scrape, and calculation details.
+- Fix watch message pacing and send tool history separately from reply text to reduce dropped response starts.
 
 # 0.3.2
 
