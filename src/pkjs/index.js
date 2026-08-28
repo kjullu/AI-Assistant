@@ -177,7 +177,8 @@ function pumpSendQueue() {
       }
       pumpSendQueue();
     }
-    if (WATCH_RENDER_GAP_MS > 0) {
+    var needsRenderGap = item.dict.AssistantResponse !== undefined || item.dict.ToolActivity !== undefined;
+    if (needsRenderGap && WATCH_RENDER_GAP_MS > 0) {
       setTimeout(releaseQueue, WATCH_RENDER_GAP_MS);
     } else {
       releaseQueue();
@@ -224,11 +225,22 @@ function sendAssistantReply(reply, requestId, toolActivity) {
     chunks.push('No response.');
   }
 
+  var chunkIndex = 0;
+  var historyText = toolActivityHistoryText(toolActivity);
+  if (historyText) {
+    sendToWatch({
+      Status: 'Receiving...',
+      AssistantResponse: historyText,
+      ResponseChunkIndex: chunkIndex++,
+      ResponseChunkDone: 0
+    }, requestId);
+  }
+
   for (var i = 0; i < chunks.length; i++) {
     var message = {
       Status: i === chunks.length - 1 ? 'Done' : 'Receiving...',
-      AssistantResponse: (i === 0 ? toolActivityHistoryText(toolActivity) : '') + chunks[i],
-      ResponseChunkIndex: i,
+      AssistantResponse: chunks[i],
+      ResponseChunkIndex: chunkIndex++,
       ResponseChunkDone: i === chunks.length - 1 ? 1 : 0
     };
     sendToWatch(message, requestId);
@@ -1698,13 +1710,13 @@ function extractReplyFromPartialJson(content) {
   return result;
 }
 
-function sendAssistantDelta(delta, chunkIndex, done, generation, toolActivity) {
+function sendAssistantDelta(delta, chunkIndex, done, generation) {
   if (generation !== requestGeneration) {
     return;
   }
   var message = {
     Status: done ? 'Done' : 'Receiving...',
-    AssistantResponse: (chunkIndex === 0 ? toolActivityHistoryText(toolActivity) : '') + delta,
+    AssistantResponse: delta,
     ResponseChunkIndex: chunkIndex,
     ResponseChunkDone: done ? 1 : 0
   };
@@ -1907,10 +1919,15 @@ function callModelStream(messages, generation, callback, toolActivity) {
   var pendingLine = '';
   var fullContent = '';
   var sentReplyLength = 0;
-  var chunkIndex = 0;
+  var historyText = toolActivityHistoryText(toolActivity);
+  var chunkIndex = historyText ? 1 : 0;
   var sentAnyChunk = false;
   var fallbackStarted = false;
   var streamWatchdog = null;
+
+  if (historyText) {
+    sendAssistantDelta(historyText, 0, false, generation);
+  }
 
   function startNonStreamingFallback(reason) {
     if (fallbackStarted || !requestIsCurrent(request)) {
@@ -1970,7 +1987,7 @@ function callModelStream(messages, generation, callback, toolActivity) {
       var replySoFar = extractStreamableReply(fullContent);
       if (replySoFar.length > sentReplyLength) {
         var newText = replySoFar.substring(sentReplyLength);
-        sendAssistantDelta(newText, chunkIndex++, false, generation, toolActivity);
+        sendAssistantDelta(newText, chunkIndex++, false, generation);
         sentAnyChunk = true;
         sentReplyLength = replySoFar.length;
       }
@@ -2050,14 +2067,14 @@ function callModelStream(messages, generation, callback, toolActivity) {
     }
 
     if (!hasToolCalls && finalReply && !sentAnyChunk) {
-      sendAssistantDelta(finalReply, 0, true, generation, toolActivity);
+      sendAssistantDelta(finalReply, chunkIndex, true, generation);
       sentAnyChunk = true;
     } else if (!hasToolCalls && sentAnyChunk) {
       var missingText = finalReply.substring(sentReplyLength);
       if (missingText) {
-        sendAssistantDelta(missingText, chunkIndex++, false, generation, toolActivity);
+        sendAssistantDelta(missingText, chunkIndex++, false, generation);
       }
-      sendAssistantDelta('', chunkIndex, true, generation, toolActivity);
+      sendAssistantDelta('', chunkIndex, true, generation);
     }
 
     parsed.reply = finalReply || '';

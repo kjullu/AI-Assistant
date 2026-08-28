@@ -36,7 +36,6 @@
 #define CHAT_HISTORY_BUFFER_SIZE 14000
 #define STATS_BUFFER_SIZE 512
 #define TOOL_HISTORY_PREFIX "[tool] "
-#define REPLAY_PROMPT_PREFIX "replay-prompt:"
 #define PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED 1001
 
 // Pointers to Pebble UI/session objects created at runtime.
@@ -1617,17 +1616,17 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *request_id_tuple = dict_find(iter, MESSAGE_KEY_RequestId);
   Tuple *health_request_tuple = dict_find(iter, MESSAGE_KEY_HealthRequest);
   Tuple *tool_activity_tuple = dict_find(iter, MESSAGE_KEY_ToolActivity);
-  Tuple *debug_log_tuple = dict_find(iter, MESSAGE_KEY_DebugLog);
   Tuple *reset_first_run_tuple = dict_find(iter, MESSAGE_KEY_ResetFirstRunNotice);
+  Tuple *replay_prompt_tuple = dict_find(iter, MESSAGE_KEY_ReplayPrompt);
 
   if (reset_first_run_tuple && reset_first_run_tuple->value->int32 == 1) {
     persist_delete(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED);
   }
 
   // Developer replay initializes a real prompt turn without invoking phone-side AI.
-  if (debug_log_tuple && strncmp(debug_log_tuple->value->cstring, REPLAY_PROMPT_PREFIX,
-                                 strlen(REPLAY_PROMPT_PREFIX)) == 0) {
-    begin_prompt_turn(debug_log_tuple->value->cstring + strlen(REPLAY_PROMPT_PREFIX), "Thinking...");
+  if (replay_prompt_tuple && replay_prompt_tuple->type == TUPLE_CSTRING &&
+      replay_prompt_tuple->length > 1) {
+    begin_prompt_turn(replay_prompt_tuple->value->cstring, "Thinking...");
     return;
   }
 

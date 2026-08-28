@@ -80,7 +80,8 @@
       "ReasoningEffort",
       "OpenRouterProvider",
       "ToolActivity",
-      "ResetFirstRunNotice"
+      "ResetFirstRunNotice",
+      "ReplayPrompt"
     ],
     "resources": {
       "media": []
