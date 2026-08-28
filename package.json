@@ -79,7 +79,8 @@
       "HealthData",
       "ReasoningEffort",
       "OpenRouterProvider",
-      "ToolActivity"
+      "ToolActivity",
+      "ResetFirstRunNotice"
     ],
     "resources": {
       "media": []

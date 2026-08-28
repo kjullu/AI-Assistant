@@ -37,10 +37,13 @@
 #define STATS_BUFFER_SIZE 512
 #define TOOL_HISTORY_PREFIX "[tool] "
 #define REPLAY_PROMPT_PREFIX "replay-prompt:"
+#define PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED 1001
 
 // Pointers to Pebble UI/session objects created at runtime.
 static Window *s_window;
+static Window *s_first_run_window;
 static ScrollLayer *s_scroll_layer;
+static ScrollLayer *s_first_run_scroll_layer;
 static StatusBarLayer *s_status_layer;
 static Layer *s_scroll_indicator_down;
 static TextLayer *s_prompt_label_layer;
@@ -54,6 +57,8 @@ static TextLayer *s_status_message_layer;
 static Layer *s_sessions_layer;
 static Layer *s_settings_layer;
 static DictationSession *s_dictation_session;
+static TextLayer *s_first_run_title_layer;
+static TextLayer *s_first_run_body_layer;
 
 // These buffers hold the current conversation state shown in the single text view.
 static char s_last_prompt[DICTATION_BUFFER_SIZE];
@@ -64,8 +69,10 @@ static char s_status_text[64];
 static char s_stats_text[STATS_BUFFER_SIZE];
 static char s_sessions_text[4096];
 static bool s_start_dictation_on_appear;
+static bool s_show_first_run;
 static bool s_show_home = true;
 static bool s_request_active;
+static bool s_auto_follow_chat = true;
 static bool s_cancel_pending;
 static bool s_clear_session_pending;
 static uint32_t s_active_request_id;
@@ -110,6 +117,13 @@ static void append_chat_history(const char *text);
 static bool send_simple_command(uint32_t key, const char *failure_status);
 static void toggle_selected_setting(void);
 static void open_sessions_screen(void);
+
+static const char *FIRST_RUN_TITLE = "Early access";
+static const char *FIRST_RUN_BODY =
+  "This app is still a work in progress. Expect rough edges.\n\n"
+  "Found a bug? Open the app's store page and use the Source link at the bottom to file an issue on GitHub.\n\n"
+  "The store page and GitHub also explain every control.\n\n"
+  "SELECT continue";
 
 static bool is_session_header(const char *line) {
   return strncmp(line, "Session ", 8) == 0;
@@ -956,6 +970,7 @@ static void clear_watch_session(void) {
   s_show_new_session = false;
   s_request_active = false;
   s_response_started = false;
+  s_auto_follow_chat = true;
   update_display("Ready");
 }
 
@@ -1352,6 +1367,24 @@ static void layout_chat(bool scroll_to_bottom) {
   }
 }
 
+static bool chat_view_is_active(void) {
+  return !s_show_home && !s_show_settings && !s_show_sessions &&
+         !s_show_new_session && !s_show_choice;
+}
+
+static void update_chat_auto_follow_from_offset(void) {
+  if (!chat_view_is_active()) {
+    return;
+  }
+
+  GRect bounds = layer_get_bounds(scroll_layer_get_layer(s_scroll_layer));
+  GSize content_size = scroll_layer_get_content_size(s_scroll_layer);
+  GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
+  int16_t bottom_offset = content_size.h > bounds.size.h ?
+                          bounds.size.h - content_size.h : 0;
+  s_auto_follow_chat = offset.y <= bottom_offset + 1;
+}
+
 // Long assistant replies arrive from the phone as multiple AppMessage chunks.
 static void append_response_chunk(const char *chunk) {
   // Find out how much space is left so we do not overflow the response buffer.
@@ -1512,7 +1545,7 @@ static void update_display(const char *status) {
   status_bar_layer_set_colors(s_status_layer, GColorWhite, GColorBlack);
   text_layer_set_text(s_prompt_layer, s_last_prompt);
   text_layer_set_text(s_assistant_layer, s_assistant_response);
-  layout_chat(true);
+  layout_chat(s_auto_follow_chat);
 }
 
 // Initialize the on-watch transcript state shared by real and replayed prompts.
@@ -1526,6 +1559,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
   s_assistant_response[0] = '\0';
   s_show_home = false;
   s_request_active = true;
+  s_auto_follow_chat = true;
   s_active_request_id++;
   if (s_active_request_id == 0) {
     s_active_request_id = 1;
@@ -1584,6 +1618,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *health_request_tuple = dict_find(iter, MESSAGE_KEY_HealthRequest);
   Tuple *tool_activity_tuple = dict_find(iter, MESSAGE_KEY_ToolActivity);
   Tuple *debug_log_tuple = dict_find(iter, MESSAGE_KEY_DebugLog);
+  Tuple *reset_first_run_tuple = dict_find(iter, MESSAGE_KEY_ResetFirstRunNotice);
+
+  if (reset_first_run_tuple && reset_first_run_tuple->value->int32 == 1) {
+    persist_delete(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED);
+  }
 
   // Developer replay initializes a real prompt turn without invoking phone-side AI.
   if (debug_log_tuple && strncmp(debug_log_tuple->value->cstring, REPLAY_PROMPT_PREFIX,
@@ -1959,6 +1998,7 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
   } else {
     scroll_layer_set_content_offset(s_scroll_layer,
                                     GPoint(0, scroll_layer_get_content_offset(s_scroll_layer).y + 40), false);
+    update_chat_auto_follow_from_offset();
   }
 }
 
@@ -1984,6 +2024,7 @@ static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
   } else {
     scroll_layer_set_content_offset(s_scroll_layer,
                                     GPoint(0, scroll_layer_get_content_offset(s_scroll_layer).y - 40), false);
+    update_chat_auto_follow_from_offset();
   }
 }
 
@@ -2035,6 +2076,7 @@ static void scroll_by_delta(int16_t delta_y) {
   }
 
   scroll_layer_set_content_offset(s_scroll_layer, offset, false);
+  update_chat_auto_follow_from_offset();
 }
 
 static void touch_handler(const TouchEvent *event, void *context) {
@@ -2169,7 +2211,7 @@ static void window_appear(Window *window) {
   touch_service_subscribe(touch_handler, NULL);
 #endif
 
-  if (s_start_dictation_on_appear) {
+  if (s_start_dictation_on_appear && !s_show_first_run) {
     s_start_dictation_on_appear = false;
     dictation_session_start(s_dictation_session);
   }
@@ -2179,6 +2221,72 @@ static void window_disappear(Window *window) {
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
   touch_service_unsubscribe();
 #endif
+}
+
+static void dismiss_first_run_screen(ClickRecognizerRef recognizer, void *context) {
+  persist_write_bool(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED, true);
+  s_show_first_run = false;
+  window_stack_pop(true);
+}
+
+static void close_app_from_first_run(ClickRecognizerRef recognizer, void *context) {
+  window_stack_pop_all(true);
+}
+
+static void first_run_click_config_provider(void *context) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, dismiss_first_run_screen);
+  window_single_click_subscribe(BUTTON_ID_BACK, close_app_from_first_run);
+}
+
+static void first_run_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+  int16_t text_width = bounds.size.w - (PADDING * 2);
+  GFont title_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  GFont body_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GSize title_size = graphics_text_layout_get_content_size(
+    FIRST_RUN_TITLE, title_font, GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT),
+    GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  GSize body_size = graphics_text_layout_get_content_size(
+    FIRST_RUN_BODY, body_font, GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT),
+    GTextOverflowModeWordWrap, GTextAlignmentLeft);
+  int16_t body_y = PADDING + title_size.h + PADDING;
+  int16_t content_height = body_y + body_size.h + PADDING;
+
+  s_first_run_scroll_layer = scroll_layer_create(bounds);
+  scroll_layer_set_shadow_hidden(s_first_run_scroll_layer, true);
+  scroll_layer_set_callbacks(s_first_run_scroll_layer, (ScrollLayerCallbacks) {
+    .click_config_provider = first_run_click_config_provider
+  });
+  scroll_layer_set_click_config_onto_window(s_first_run_scroll_layer, window);
+  scroll_layer_set_content_size(s_first_run_scroll_layer,
+                                GSize(bounds.size.w, content_height));
+  layer_add_child(window_layer, scroll_layer_get_layer(s_first_run_scroll_layer));
+
+  s_first_run_title_layer = text_layer_create(
+    GRect(PADDING, PADDING, text_width, title_size.h));
+  text_layer_set_text(s_first_run_title_layer, FIRST_RUN_TITLE);
+  text_layer_set_font(s_first_run_title_layer, title_font);
+  text_layer_set_text_color(s_first_run_title_layer, ACCENT_AI);
+  text_layer_set_background_color(s_first_run_title_layer, GColorClear);
+  scroll_layer_add_child(s_first_run_scroll_layer,
+                         text_layer_get_layer(s_first_run_title_layer));
+
+  s_first_run_body_layer = text_layer_create(
+    GRect(PADDING, body_y, text_width, body_size.h));
+  text_layer_set_text(s_first_run_body_layer, FIRST_RUN_BODY);
+  text_layer_set_font(s_first_run_body_layer, body_font);
+  text_layer_set_text_color(s_first_run_body_layer, GColorBlack);
+  text_layer_set_background_color(s_first_run_body_layer, GColorClear);
+  text_layer_set_overflow_mode(s_first_run_body_layer, GTextOverflowModeWordWrap);
+  scroll_layer_add_child(s_first_run_scroll_layer,
+                         text_layer_get_layer(s_first_run_body_layer));
+}
+
+static void first_run_window_unload(Window *window) {
+  text_layer_destroy(s_first_run_title_layer);
+  text_layer_destroy(s_first_run_body_layer);
+  scroll_layer_destroy(s_first_run_scroll_layer);
 }
 
 // Destroy UI objects created in window_load().
@@ -2202,6 +2310,7 @@ static void window_unload(Window *window) {
 
 // App setup: create the window, open AppMessage, and create dictation.
 static void init(void) {
+  s_show_first_run = !persist_exists(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED);
   s_window = window_create(); //USR: Create window and call it s_window
   //AI: Creates a Window object and stores its pointer in s_window.
   window_set_window_handlers(s_window, (WindowHandlers) { //USR: something with the scroll layer?
@@ -2227,12 +2336,24 @@ static void init(void) {
   s_start_dictation_on_appear = launch_reason() == APP_LAUNCH_QUICK_LAUNCH;
   window_stack_push(s_window, true); //USR: Make our window appear on the screen
   //AI: Push the window onto Pebble's window stack so it appears on screen, with animation.
+
+  if (s_show_first_run) {
+    s_first_run_window = window_create();
+    window_set_window_handlers(s_first_run_window, (WindowHandlers) {
+      .load = first_run_window_load,
+      .unload = first_run_window_unload
+    });
+    window_stack_push(s_first_run_window, true);
+  }
 }
 
 // Release resources before the app exits.
 static void deinit(void) {
   // Tear down runtime objects created during init().
   dictation_session_destroy(s_dictation_session);
+  if (s_first_run_window) {
+    window_destroy(s_first_run_window);
+  }
   window_destroy(s_window);
 }
 

@@ -12,12 +12,15 @@ function createRuntime(settings = {}) {
   const sentMessages = [];
   const timers = [];
   const storage = new Map(Object.entries({ OpenRouterApiKey: 'test-key', ...settings }));
+  let claySettings = { converted: {}, raw: {} };
   let sendHandler = (dict, success) => success();
 
   function Clay(config) { this.config = config; }
   Clay.prototype.setSettings = function() {};
   Clay.prototype.generateUrl = function() { return 'https://config.invalid'; };
-  Clay.prototype.getSettings = function() { return {}; };
+  Clay.prototype.getSettings = function(response, convert) {
+    return convert === false ? claySettings.raw : claySettings.converted;
+  };
 
   function FakeXHR() {
     this.headers = {};
@@ -83,9 +86,23 @@ function createRuntime(settings = {}) {
     sentMessages,
     storage,
     timers,
+    setClaySettings(settings) { claySettings = settings; },
     setSendHandler(handler) { sendHandler = handler; }
   };
 }
+
+test('phone settings can reset the first-run notice on the watch', () => {
+  const runtime = createRuntime();
+  runtime.setClaySettings({
+    converted: {},
+    raw: { ResetFirstRunNotice: { value: true } }
+  });
+
+  runtime.listeners.webviewclosed({ response: 'saved' });
+
+  assert.ok(runtime.sentMessages.some(message =>
+    message.ResetFirstRunNotice === 1 && message.Status === 'Notice reset'));
+});
 
 function streamResponse(request, value) {
   const content = JSON.stringify(value);

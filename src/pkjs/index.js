@@ -2851,6 +2851,7 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     EnableChoice: getBoolSetting('EnableChoice', true),
     EnableTimeline: getBoolSetting('EnableTimeline', true),
     EnableHealth: getBoolSetting('EnableHealth', false),
+    ResetFirstRunNotice: false,
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),
     FirecrawlApiKey: getSetting('FirecrawlApiKey', ''),
     DebugLog: localStorage.getItem('DebugLog') || ''
@@ -2904,8 +2905,14 @@ Pebble.addEventListener('webviewclosed', function(e) {
 
   var convertedSettings = clay.getSettings(e.response);
   var rawSettings = clay.getSettings(e.response, false);
+  var resetFirstRunNotice = settingValue(
+    convertedSettings, rawSettings, 'ResetFirstRunNotice', messageKeys.ResetFirstRunNotice);
   saveSettings(convertedSettings, rawSettings);
-  sendToWatch({ Status: 'Settings saved' });
+  if (resetFirstRunNotice) {
+    sendToWatch({ ResetFirstRunNotice: 1, Status: 'Notice reset' });
+  } else {
+    sendToWatch({ Status: 'Settings saved' });
+  }
   sendToolStatesToWatch();
   sendStatsToWatch();
   refreshRemainingCredits();

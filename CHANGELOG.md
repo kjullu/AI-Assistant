@@ -6,6 +6,9 @@
 - Add light Markdown rendering for assistant replies and saved conversations.
 - Fix each tool appearing only at the end by showing it when execution starts and retaining it above the final answer.
 - Fix rapid live updates outrunning the watch renderer and leaving blank space before the final response.
+- Fix streamed replies pulling the chat back to the bottom after the user scrolls up.
+- Add a one-time first-run notice with a clear Early access heading and directions to support and control documentation.
+- Add a phone-setting control that shows the first-run notice again on the next watch-app launch.
 - Update tool activity live as each tool starts and show location, weather, search, scrape, and calculation details.
 
 # 0.3.2
