@@ -2,6 +2,7 @@
 
 - Replace prompt-generated JSON tool requests with OpenAI-compatible function tools, streamed tool calls, and matching tool-result messages.
 - Return malformed tool arguments to the model as errors, report unsupported tool models clearly, and keep streamed prose instead of executing ambiguous mixed responses.
+- Normalize unsupported punctuation and emoji into readable watch-safe text.
 - Improve location results with fresher high-accuracy coordinates and street, postal code, and locality details.
 - Add a model-aware provider picker to the phone settings.
 - Fix current-location weather requests and back-to-back JSON tool calls.
