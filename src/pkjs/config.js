@@ -223,6 +223,22 @@ module.exports = [
     "items": [
       {
         "type": "heading",
+        "defaultValue": "First-run notice"
+      },
+      {
+        "type": "toggle",
+        "messageKey": "ResetFirstRunNotice",
+        "label": "Show notice again",
+        "description": "Save with this enabled to show the Early access notice the next time you open the watch app.",
+        "defaultValue": false
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
         "defaultValue": "Debug"
       },
       {
