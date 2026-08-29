@@ -1691,7 +1691,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   //AI: If the phone sent an error, show it in place of the assistant response and mark status as Error.
   if (error_tuple) {
     snprintf(s_assistant_response, sizeof(s_assistant_response), "%s", error_tuple->value->cstring);
-    append_chat_history("\nError\n");
+    if (s_current_ai_response_start) {
+      *s_current_ai_response_start = '\0';
+    }
+    append_chat_history("Error\n");
     append_chat_history(error_tuple->value->cstring);
     status = "Error";
     s_request_active = false;
