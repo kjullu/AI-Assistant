@@ -152,7 +152,6 @@ def main():
                 raise RuntimeError("Watch {} {} after 3 attempts".format(last_outcome, name))
             if not args.no_captures:
                 time.sleep(args.delay)
-            if not args.no_captures:
                 save_screenshot(pebble, args.capture_dir / (name + ".png"))
             print(name)
     finally:
