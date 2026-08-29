@@ -188,6 +188,51 @@ test('final answers stream as plain text without a JSON wrapper', () => {
   assert.match(runtime.context.buildSystemPrompt(), /watch-friendly answer as plain text/);
 });
 
+test('message stats count completed answers instead of failed attempts', () => {
+  const failedRuntime = createRuntime();
+  prompt(failedRuntime, 'This will fail');
+  const failedRequest = modelRequests(failedRuntime)[0];
+  failedRequest.status = 500;
+  failedRequest.responseText = 'failed';
+  failedRequest.onload();
+  assert.equal(failedRuntime.context.getMonthlyStats().messages, 0);
+
+  const successfulRuntime = createRuntime();
+  prompt(successfulRuntime, 'This will work');
+  streamTextResponse(modelRequests(successfulRuntime)[0], 'Done.');
+  assert.equal(JSON.parse(successfulRuntime.storage.get('MonthlyStats')).messages, 1);
+});
+
+test('a completed multi-round turn refreshes credits once', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Calculate two plus two');
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'calculator', arguments: { expression: '2+2' } }],
+    reply: ''
+  });
+  streamTextResponse(modelRequests(runtime)[1], 'Four.');
+
+  assert.equal(runtime.requests.filter(request => request.url === runtime.context.OPENROUTER_CREDITS_URL).length, 1);
+});
+
+test('search stats count successful results instead of failed attempts', () => {
+  const failedRuntime = createRuntime({ EnableSearch: '1', BraveSearchApiKey: 'brave-key' });
+  failedRuntime.context.braveSearch('failure', failedRuntime.context.requestGeneration, () => {});
+  const failedRequest = failedRuntime.requests.at(-1);
+  failedRequest.status = 500;
+  failedRequest.responseText = 'failed';
+  failedRequest.onload();
+  assert.equal(failedRuntime.context.getMonthlyStats().searches, 0);
+
+  const successfulRuntime = createRuntime({ EnableSearch: '1', BraveSearchApiKey: 'brave-key' });
+  successfulRuntime.context.braveSearch('success', successfulRuntime.context.requestGeneration, () => {});
+  const successfulRequest = successfulRuntime.requests.at(-1);
+  successfulRequest.status = 200;
+  successfulRequest.responseText = JSON.stringify({ web: { results: [] } });
+  successfulRequest.onload();
+  assert.equal(successfulRuntime.context.getMonthlyStats().searches, 1);
+});
+
 test('the system prompt advertises the Markdown supported by the watch', () => {
   const runtime = createRuntime();
   const promptText = runtime.context.buildSystemPrompt();
@@ -210,6 +255,22 @@ test('model default omits the reasoning request parameter', () => {
   prompt(runtime, 'Use defaults');
   const body = JSON.parse(modelRequests(runtime)[0].body);
   assert.equal(body.reasoning, undefined);
+});
+
+test('free model capability lookup prefers the exact model id', () => {
+  const runtime = createRuntime();
+  let capability;
+  runtime.context.fetchReasoningCapability('vendor/model:free', result => { capability = result; });
+  const request = runtime.requests.at(-1);
+  request.status = 200;
+  request.responseText = JSON.stringify({ data: [
+    { id: 'vendor/model', reasoning: { supported_efforts: ['high'] } },
+    { id: 'vendor/model:free', reasoning: { supported_efforts: ['low'] } }
+  ] });
+  request.onload();
+
+  assert.equal(capability.id, 'vendor/model:free');
+  assert.ok(runtime.storage.has('ReasoningCapability:vendor/model:free'));
 });
 
 test('configured provider restricts OpenRouter routing', () => {
@@ -575,6 +636,20 @@ test('cancelled choices cannot be resumed by delayed answers', () => {
   assert.equal(modelRequests(runtime).length, 1);
 });
 
+test('an unanswered choice times out and resumes the model round', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Choose for me', 14);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'choice', arguments: { question: 'Pick', options: ['A', 'B'] } }],
+    reply: ''
+  });
+
+  runtime.timers.at(-1)();
+
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.match(followup.messages.at(-1).content, /Choice prompt timed out/);
+});
+
 test('the same choice can be requested again in a later round', () => {
   const runtime = createRuntime();
   const choice = { name: 'choice', arguments: { question: 'Pick', options: ['A', 'B'] } };
@@ -589,6 +664,25 @@ test('the same choice can be requested again in a later round', () => {
   assert.ok(runtime.sentMessages.some(message =>
     message.AssistantResponse === '[tool] Choice tool\n[tool] Choice tool\n'));
   assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'A then B.'));
+});
+
+test('saved sessions round-trip Markdown dividers and session-like summary text', () => {
+  const sessions = [
+    {
+      createdAt: '2026-08-29T08:00:00.000Z',
+      summary: 'First summary\n---\nSession 99\n2026-01-01T00:00:00.000Z\nstill the first summary'
+    },
+    {
+      createdAt: '2026-08-29T09:00:00.000Z',
+      summary: 'Second summary'
+    }
+  ];
+  const runtime = createRuntime({ SavedSessions: JSON.stringify(sessions) });
+
+  const editableText = runtime.context.sessionsToText();
+  runtime.context.saveSessionsFromText(editableText);
+
+  assert.deepEqual(JSON.parse(runtime.storage.get('SavedSessions')), sessions);
 });
 
 test('parallel scrape results retain requested order', () => {
@@ -818,6 +912,29 @@ test('streamed reply chunks are normalized at the watch boundary', () => {
   runtime.context.sendAssistantDelta('1× B200 ± ≠', 0, false, 3);
 
   assert.equal(runtime.sentMessages[0].AssistantResponse, '1x B200 +/- !=');
+});
+
+test('streaming waits for a low surrogate before sending an emoji fallback', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Use an emoji');
+  const request = modelRequests(runtime)[0];
+  request.status = 200;
+  request.responseText = `data: ${JSON.stringify({ choices: [{ delta: { content: 'Ready \ud83d' } }] })}\n\n`;
+  request.onprogress();
+
+  assert.deepEqual(
+    runtime.sentMessages.filter(message => message.AssistantResponse).map(message => message.AssistantResponse),
+    ['Ready ']
+  );
+
+  request.responseText += `data: ${JSON.stringify({ choices: [{ delta: { content: '\ude80 now' } }] })}\n\ndata: [DONE]\n`;
+  request.onprogress();
+  request.onload();
+
+  assert.equal(
+    runtime.sentMessages.filter(message => message.AssistantResponse).map(message => message.AssistantResponse).join(''),
+    'Ready [emoji] now'
+  );
 });
 
 test('an in-flight message from a cancelled request is not retried', () => {

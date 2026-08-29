@@ -15,6 +15,9 @@
 - Add a phone-setting control that shows the first-run notice again on the next watch-app launch.
 - Update tool activity live as each tool starts and show location, weather, search, scrape, and calculation details.
 - Fix watch message pacing and send tool history separately from reply text to reduce dropped response starts.
+- Fix split emoji in streamed replies, preserve Markdown dividers in saved sessions, and time out unanswered choice prompts.
+- Count completed messages and successful searches, reduce credits requests, and improve free-model capability lookup.
+- Replace partial streamed text with the error when a response fails.
 
 # 0.3.2
 
