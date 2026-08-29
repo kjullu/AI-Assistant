@@ -50,6 +50,7 @@ var MAX_HISTORY_MESSAGES = 24;
 var CURRENCY_CACHE_MS = 12 * 60 * 60 * 1000;
 var REASONING_CAPABILITY_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 var PROVIDER_ENDPOINT_CACHE_MS = 24 * 60 * 60 * 1000;
+var DEBUG_STREAM_DELTAS = false;
 
 var conversationHistory = [];
 var activeSessionCreatedAt = null;
@@ -61,6 +62,7 @@ var currentRequestId = 0;
 var pendingChoiceGeneration = 0;
 var pendingChoiceRequestId = 0;
 var pendingChoiceCallback = null;
+var pendingChoiceTimer = null;
 var pendingHealthGeneration = 0;
 var pendingHealthRequestId = 0;
 var pendingHealthCallback = null;
@@ -101,9 +103,13 @@ function requestIsCurrent(request) {
 }
 
 function clearPendingChoice() {
+  if (pendingChoiceTimer) {
+    clearTimeout(pendingChoiceTimer);
+  }
   pendingChoiceGeneration = 0;
   pendingChoiceRequestId = 0;
   pendingChoiceCallback = null;
+  pendingChoiceTimer = null;
 }
 
 function clearPendingHealth() {
@@ -297,7 +303,7 @@ function getBoolSetting(key, fallback) {
 }
 
 function normalizedModelId(model) {
-  return String(model || DEFAULT_MODEL).replace(/:(free|nitro|floor|exacto)$/i, '');
+  return String(model || DEFAULT_MODEL).replace(/:(nitro|floor|exacto)$/i, '');
 }
 
 function providerModelId(model) {
@@ -461,6 +467,7 @@ function fetchReasoningCapability(model, callback) {
       var json = JSON.parse(request.responseText);
       var models = json.data || [];
       var wanted = normalizedModelId(model);
+      var fallback = wanted.replace(/:free$/i, '');
       var found = null;
       for (var i = 0; i < models.length; i++) {
         if (models[i].id === wanted) {
@@ -470,6 +477,18 @@ function fetchReasoningCapability(model, callback) {
             supported_parameters: models[i].supported_parameters || []
           };
           break;
+        }
+      }
+      if (!found && fallback !== wanted) {
+        for (var j = 0; j < models.length; j++) {
+          if (models[j].id === fallback) {
+            found = {
+              id: models[j].id,
+              reasoning: models[j].reasoning || null,
+              supported_parameters: models[j].supported_parameters || []
+            };
+            break;
+          }
         }
       }
       if (found) {
@@ -632,7 +651,6 @@ function addUsageStats(usage) {
   stats.completionTokens += Number(usage.completion_tokens || 0);
   stats.totalTokens += Number(usage.total_tokens || 0);
   saveMonthlyStats(stats);
-  refreshRemainingCredits();
 }
 
 function incrementStat(key) {
@@ -787,7 +805,9 @@ function sessionsToText() {
   for (var i = 0; i < sessions.length; i++) {
     lines.push('Session ' + (i + 1));
     lines.push(sessions[i].createdAt);
-    lines.push(sessions[i].summary || '(empty)');
+    lines.push(String(sessions[i].summary || '(empty)').split('\n').map(function(line) {
+      return line === '---' || line.charAt(0) === '\\' ? '\\' + line : line;
+    }).join('\n'));
     if (i !== sessions.length - 1) {
       lines.push('---');
     }
@@ -826,15 +846,20 @@ function saveSessionsFromText(text) {
     var lines = chunk.split('\n');
     var header = lines[0] || '';
     var date = lines[1] || '';
+    function summaryFrom(start) {
+      return lines.slice(start).map(function(line) {
+        return line.charAt(0) === '\\' ? line.substring(1) : line;
+      }).join('\n');
+    }
     if (/^Session\s+\d+/i.test(header) && /^\d{4}-\d{2}-\d{2}T/.test(date)) {
       sessions.push({
         createdAt: date,
-        summary: lines.slice(2).join('\n')
+        summary: summaryFrom(2)
       });
     } else if (/^\d{4}-\d{2}-\d{2}T/.test(header)) {
       sessions.push({
         createdAt: header,
-        summary: lines.slice(1).join('\n')
+        summary: summaryFrom(1)
       });
     }
   }
@@ -1989,21 +2014,27 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
         return;
       }
 
-      if (reasoningDelta) {
+      if (reasoningDelta && DEBUG_STREAM_DELTAS) {
         debugLog('stream reasoning delta len=' + reasoningDelta.length);
       }
       fullContent += contentDelta;
-      debugLog('stream delta len=' + contentDelta.length + ' full=' + fullContent.length);
+      if (DEBUG_STREAM_DELTAS) {
+        debugLog('stream delta len=' + contentDelta.length + ' full=' + fullContent.length);
+      }
       if (streamWatchdog) {
         clearTimeout(streamWatchdog);
         streamWatchdog = null;
       }
       var replySoFar = extractStreamableReply(fullContent);
-      if (replySoFar.length > sentReplyLength) {
-        var newText = replySoFar.substring(sentReplyLength);
+      var sendableLength = replySoFar.length;
+      if (sendableLength > 0 && /[\ud800-\udbff]/.test(replySoFar.charAt(sendableLength - 1))) {
+        sendableLength--;
+      }
+      if (sendableLength > sentReplyLength) {
+        var newText = replySoFar.substring(sentReplyLength, sendableLength);
         sendAssistantDelta(newText, chunkIndex++, false, generation);
         sentAnyChunk = true;
-        sentReplyLength = replySoFar.length;
+        sentReplyLength = sendableLength;
       }
     } catch (err) {
       console.log('Could not parse stream line: ' + err.message);
@@ -2150,8 +2181,6 @@ function braveSearch(query, generation, callback) {
     return;
   }
 
-  incrementStat('searches');
-  sendStatsToWatch();
   var request = new XMLHttpRequest();
   trackRequest(request, generation);
   request.open('GET', BRAVE_SEARCH_URL + '?count=' + MAX_SEARCH_RESULTS + '&q=' + encodeURIComponent(query), true);
@@ -2182,6 +2211,8 @@ function braveSearch(query, generation, callback) {
       if (results.length === 0) {
         lines.push('No results found.');
       }
+      incrementStat('searches');
+      sendStatsToWatch();
       callback(lines.join('\n'), null);
     } catch (err) {
       callback(null, 'Bad search response.');
@@ -2215,8 +2246,6 @@ function firecrawlScrape(url, generation, callback) {
     return;
   }
 
-  incrementStat('searches');
-  sendStatsToWatch();
   var request = new XMLHttpRequest();
   trackRequest(request, generation);
   request.open('POST', FIRECRAWL_SCRAPE_URL, true);
@@ -2255,6 +2284,8 @@ function firecrawlScrape(url, generation, callback) {
       } else {
         lines.push('No readable content found.');
       }
+      incrementStat('searches');
+      sendStatsToWatch();
       callback(lines.join('\n'), null);
     } catch (err) {
       callback(null, 'Bad scrape response.');
@@ -2300,7 +2331,9 @@ function finishAssistantTurn(state, parsed, alreadySent) {
   }
 
   saveCurrentSessionToConversationHistory();
+  incrementStat('messages');
   sendStatsToWatch();
+  refreshRemainingCredits();
 }
 
 function validWebUrl(url) {
@@ -2325,6 +2358,13 @@ function executeChoiceTool(args, generation, requestId, callback) {
   pendingChoiceGeneration = generation;
   pendingChoiceRequestId = requestId;
   pendingChoiceCallback = callback;
+  pendingChoiceTimer = setTimeout(function() {
+    if (pendingChoiceCallback && pendingChoiceGeneration === generation) {
+      var timeoutCallback = pendingChoiceCallback;
+      clearPendingChoice();
+      timeoutCallback(null, 'Choice prompt timed out.');
+    }
+  }, 60000);
   sendToWatch({ Status: 'Choose', ChoiceQuestion: clip(question, 240), ChoiceOptions: options.join('\n') }, requestId);
 }
 
@@ -2601,7 +2641,6 @@ function callOpenRouter(prompt, requestId) {
   currentRequestId = requestId || (previousRequestId + 1);
   var generation = requestGeneration;
   debugLog('callOpenRouter promptLen=' + String(prompt || '').length + ' generation=' + generation);
-  incrementStat('messages');
   sendStatsToWatch();
 
   var searchAvailable = getBoolSetting('EnableSearch', false) && !!getSetting('BraveSearchApiKey', '');
