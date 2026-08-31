@@ -5,6 +5,7 @@
 - Normalize unsupported punctuation and emoji into readable watch-safe text.
 - Improve location results with fresher high-accuracy coordinates and street, postal code, and locality details.
 - Add a model-aware provider picker to the phone settings.
+- Add OpenRouter routing choices for automatic, cheapest, fastest generation, and fastest response-start provider selection.
 - Fix current-location weather requests and back-to-back JSON tool calls.
 - Add light Markdown rendering for assistant replies and saved conversations.
 - Fix each tool appearing only at the end by showing it when execution starts and retaining it above the final answer.

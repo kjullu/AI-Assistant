@@ -79,6 +79,7 @@
       "HealthData",
       "ReasoningEffort",
       "OpenRouterProvider",
+      "OpenRouterSort",
       "ToolActivity",
       "ResetFirstRunNotice",
       "ReplayPrompt"

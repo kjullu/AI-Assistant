@@ -287,6 +287,45 @@ test('automatic provider leaves OpenRouter routing unchanged', () => {
   assert.equal(body.provider, undefined);
 });
 
+test('routing priority sorts OpenRouter providers by throughput', () => {
+  const runtime = createRuntime({ OpenRouterSort: 'throughput' });
+  prompt(runtime, 'Choose the fastest provider');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.deepEqual(body.provider, { sort: 'throughput' });
+});
+
+test('routing priority works with a selected provider endpoint', () => {
+  const runtime = createRuntime({
+    OpenRouterProvider: 'deepinfra/turbo',
+    OpenRouterSort: 'price'
+  });
+  prompt(runtime, 'Use the cheapest DeepInfra endpoint');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.deepEqual(body.provider, {
+    only: ['deepinfra/turbo'],
+    sort: 'price'
+  });
+});
+
+test('unknown routing priority leaves OpenRouter sorting unchanged', () => {
+  const runtime = createRuntime({ OpenRouterSort: 'unexpected' });
+  prompt(runtime, 'Use safe defaults');
+  const body = JSON.parse(modelRequests(runtime)[0].body);
+  assert.equal(body.provider, undefined);
+});
+
+test('phone settings save the OpenRouter routing priority', () => {
+  const runtime = createRuntime();
+  runtime.setClaySettings({
+    converted: {},
+    raw: { OpenRouterSort: { value: 'latency' } }
+  });
+
+  runtime.listeners.webviewclosed({ response: 'saved' });
+
+  assert.equal(runtime.storage.get('OpenRouterSort'), 'latency');
+});
+
 test('provider options use exact endpoint tags and disambiguate variants', () => {
   const runtime = createRuntime();
   const options = JSON.parse(JSON.stringify(runtime.context.providerOptionsForEndpoints([
