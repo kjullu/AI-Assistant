@@ -822,6 +822,9 @@ test('a failed model request keeps the user message as context for the next turn
   const nextMessages = JSON.parse(modelRequests(runtime)[1].body).messages;
   assert.ok(nextMessages.some(message =>
     message.role === 'user' && message.content === 'Keep this question'));
+  assert.ok(nextMessages.some(message =>
+    message.role === 'assistant' &&
+    message.content === '[You did not respond because of an error: OpenRouter failed (429).]'));
   assert.equal(
     nextMessages.filter(message => message.role === 'user').at(-1).content,
     'Continue'
@@ -829,6 +832,7 @@ test('a failed model request keeps the user message as context for the next turn
 
   const sessions = JSON.parse(runtime.storage.get('SavedSessions'));
   assert.match(sessions[0].summary, /Keep this question/);
+  assert.match(sessions[0].summary, /You did not respond because of an error/);
 });
 
 test('a failed follow-up keeps completed tool context for the next turn', () => {
@@ -847,6 +851,9 @@ test('a failed follow-up keeps completed tool context for the next turn', () => 
   const nextMessages = JSON.parse(modelRequests(runtime)[2].body).messages;
   assert.ok(nextMessages.some(message => message.role === 'assistant' && message.tool_calls));
   assert.ok(nextMessages.some(message => message.role === 'tool' && /result.*4/.test(message.content)));
+  assert.ok(nextMessages.some(message =>
+    message.role === 'assistant' &&
+    message.content === '[You did not respond because of an error: OpenRouter failed (429).]'));
 });
 
 test('cancelling a request does not let an in-flight send drop the cancellation message', () => {

@@ -18,7 +18,7 @@
 - Fix split emoji in streamed replies, preserve Markdown dividers in saved sessions, and time out unanswered choice prompts.
 - Count completed messages and successful searches, reduce credits requests, and improve free-model capability lookup.
 - Replace partial streamed text with the error when a response fails.
-- Preserve failed user messages as context for the next request.
+- Preserve failed user messages and record why the assistant did not respond as context for the next request.
 - Preserve emoji supported by Pebble Gothic fonts while replacing unsupported emoji.
 
 # 0.3.2
