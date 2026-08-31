@@ -810,6 +810,45 @@ test('completed turns update one saved session record', () => {
   assert.match(sessions[0].summary, /Second question/);
 });
 
+test('a failed model request keeps the user message as context for the next turn', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Keep this question', 1);
+  const failed = modelRequests(runtime)[0];
+  failed.status = 429;
+  failed.responseText = '{"error":{"message":"Rate limited"}}';
+  failed.onload();
+
+  prompt(runtime, 'Continue', 2);
+  const nextMessages = JSON.parse(modelRequests(runtime)[1].body).messages;
+  assert.ok(nextMessages.some(message =>
+    message.role === 'user' && message.content === 'Keep this question'));
+  assert.equal(
+    nextMessages.filter(message => message.role === 'user').at(-1).content,
+    'Continue'
+  );
+
+  const sessions = JSON.parse(runtime.storage.get('SavedSessions'));
+  assert.match(sessions[0].summary, /Keep this question/);
+});
+
+test('a failed follow-up keeps completed tool context for the next turn', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Calculate two plus two', 1);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'calculator', arguments: { expression: '2+2' } }],
+    reply: ''
+  });
+  const failed = modelRequests(runtime)[1];
+  failed.status = 429;
+  failed.responseText = '{"error":{"message":"Rate limited"}}';
+  failed.onload();
+
+  prompt(runtime, 'Continue', 2);
+  const nextMessages = JSON.parse(modelRequests(runtime)[2].body).messages;
+  assert.ok(nextMessages.some(message => message.role === 'assistant' && message.tool_calls));
+  assert.ok(nextMessages.some(message => message.role === 'tool' && /result.*4/.test(message.content)));
+});
+
 test('cancelling a request does not let an in-flight send drop the cancellation message', () => {
   const runtime = createRuntime();
   const sends = [];
@@ -888,6 +927,15 @@ test('watch text gives unsupported emoji and status symbols readable fallbacks',
   assert.equal(
     runtime.context.watchSafeText('✅ Ready ⚠\ufe0f Careful ❌ Failed 🚀🔥'),
     '[ok] Ready [!] Careful [x] Failed [emoji]'
+  );
+});
+
+test('watch text preserves emoji included in Pebble Gothic fonts', () => {
+  const runtime = createRuntime();
+
+  assert.equal(
+    runtime.context.watchSafeText('😃 👍 🎉 💩 👋'),
+    '😃 👍 🎉 💩 [emoji]'
   );
 });
 
