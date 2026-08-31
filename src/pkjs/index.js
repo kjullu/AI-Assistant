@@ -176,6 +176,7 @@ function showError(userMessage, detail) {
     debugLog('ERROR ' + userMessage);
   }
   sendToWatch({ Error: userMessage }, currentRequestId);
+  rememberFailedAssistantTurn(userMessage);
 }
 
 function pumpSendQueue() {
@@ -2352,6 +2353,21 @@ function rememberConversationMessages(messages) {
     }
     conversationHistory = conversationHistory.slice(start);
   }
+}
+
+function rememberFailedAssistantTurn(userMessage) {
+  if (conversationHistory.length === 0) {
+    return;
+  }
+  var lastMessage = conversationHistory[conversationHistory.length - 1];
+  if (lastMessage.role !== 'user' && lastMessage.role !== 'tool') {
+    return;
+  }
+  rememberConversationMessages([{
+    role: 'assistant',
+    content: '[You did not respond because of an error: ' + userMessage + ']'
+  }]);
+  saveCurrentSessionToConversationHistory();
 }
 
 function finishAssistantTurn(state, parsed, alreadySent) {
