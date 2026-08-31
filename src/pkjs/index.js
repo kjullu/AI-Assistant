@@ -623,8 +623,17 @@ function applyReasoningSetting(payload) {
 
 function applyProviderSetting(payload) {
   var provider = getSetting('OpenRouterProvider', 'auto');
+  var sort = getSetting('OpenRouterSort', 'auto');
+  var preferences = null;
   if (provider !== 'auto') {
-    payload.provider = { only: [provider] };
+    preferences = { only: [provider] };
+  }
+  if (sort === 'price' || sort === 'throughput' || sort === 'latency') {
+    preferences = preferences || {};
+    preferences.sort = sort;
+  }
+  if (preferences) {
+    payload.provider = preferences;
   }
   return payload;
 }
@@ -1063,6 +1072,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableHealth = settingValue(convertedSettings, rawSettings, 'EnableHealth', messageKeys.EnableHealth);
   var reasoningEffort = settingValue(convertedSettings, rawSettings, 'ReasoningEffort', messageKeys.ReasoningEffort);
   var openRouterProvider = settingValue(convertedSettings, rawSettings, 'OpenRouterProvider', messageKeys.OpenRouterProvider);
+  var openRouterSort = settingValue(convertedSettings, rawSettings, 'OpenRouterSort', messageKeys.OpenRouterSort);
   var braveApiKey = settingValue(convertedSettings, rawSettings, 'BraveSearchApiKey', messageKeys.BraveSearchApiKey);
   var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
@@ -1110,6 +1120,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (openRouterProvider !== undefined) {
     localStorage.setItem('OpenRouterProvider', String(openRouterProvider));
+  }
+  if (openRouterSort !== undefined) {
+    localStorage.setItem('OpenRouterSort', String(openRouterSort));
   }
   if (braveApiKey !== undefined) {
     localStorage.setItem('BraveSearchApiKey', String(braveApiKey).trim());

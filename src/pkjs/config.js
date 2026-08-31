@@ -44,6 +44,19 @@ module.exports = [
       },
       {
         "type": "select",
+        "messageKey": "OpenRouterSort",
+        "defaultValue": "auto",
+        "label": "Routing priority",
+        "description": "Choose how OpenRouter orders provider endpoints. Fastest generation favors output speed; fastest response start favors low latency.",
+        "options": [
+          { "label": "Automatic (OpenRouter)", "value": "auto" },
+          { "label": "Cheapest", "value": "price" },
+          { "label": "Fastest generation", "value": "throughput" },
+          { "label": "Fastest response start", "value": "latency" }
+        ]
+      },
+      {
+        "type": "select",
         "id": "reasoning-effort",
         "messageKey": "ReasoningEffort",
         "defaultValue": "default",
