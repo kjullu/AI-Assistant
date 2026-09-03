@@ -1,6 +1,6 @@
 # 0.4.0
 
-- Fix multiline system prompts, memory notes, and saved sessions collapsing when edited in phone settings.
+- Fix multiline system prompts, memory notes, and saved sessions collapsing or overflowing when edited in phone settings.
 - Update Memory and Choice guidance to save useful durable facts and avoid unnecessary choice prompts.
 - Move new-session vibration feedback to when the confirmation opens.
 - Replace prompt-generated JSON tool requests with OpenAI-compatible function tools, streamed tool calls, and matching tool-result messages.
