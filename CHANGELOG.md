@@ -1,5 +1,6 @@
-# 0.3.3-DEV - NOT OUT YET (Can change the 0.x.y depending on the size)
+# 0.4.0
 
+- Move new-session vibration feedback to when the confirmation opens.
 - Replace prompt-generated JSON tool requests with OpenAI-compatible function tools, streamed tool calls, and matching tool-result messages.
 - Return malformed tool arguments to the model as errors, report unsupported tool models clearly, and keep streamed prose instead of executing ambiguous mixed responses.
 - Normalize unsupported punctuation and emoji into readable watch-safe text.
@@ -28,7 +29,6 @@
 - Start dictation automatically after confirming a new session.
 - Show each tool call on its own line in the watch conversation before the final response.
 - Preserve tool calls and results as context for later conversation turns.
-- Move new-session vibration feedback to when the confirmation opens.
 
 # 0.3.1
 - Return tool results to the model with standard tool roles and matching call IDs instead of user messages.
