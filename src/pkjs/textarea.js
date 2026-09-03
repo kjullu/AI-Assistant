@@ -15,7 +15,10 @@ module.exports = {
     '.section .component-textarea{padding:0}' +
     '.component-textarea label{display:block}' +
     '.component-textarea .label{padding-bottom:.7rem}' +
-    '.component-textarea .input{display:block;min-width:100%;margin-top:.7rem}' +
+    '.component-textarea .input{' +
+      'display:block;width:100%;min-width:0;max-width:none;' +
+      'margin-top:.7rem;margin-left:0' +
+    '}' +
     '.component-textarea textarea{' +
       'box-sizing:border-box;display:block;width:100%;min-height:6.3rem;' +
       'background:#333;border-radius:.25rem;padding:.35rem .375rem;border:none;' +
