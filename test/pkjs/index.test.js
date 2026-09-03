@@ -16,6 +16,7 @@ function createRuntime(settings = {}) {
   let sendHandler = (dict, success) => success();
 
   function Clay(config) { this.config = config; }
+  Clay.prototype.registerComponent = function() {};
   Clay.prototype.setSettings = function() {};
   Clay.prototype.generateUrl = function() { return 'https://config.invalid'; };
   Clay.prototype.getSettings = function(response, convert) {
@@ -63,6 +64,7 @@ function createRuntime(settings = {}) {
       if (name === '@rebble/clay') return Clay;
       if (name === 'message_keys') return {};
       if (name === './config') return [];
+      if (name === './textarea') return {};
       throw new Error(`Unexpected require: ${name}`);
     },
     Pebble: {
@@ -241,6 +243,16 @@ test('the system prompt advertises the Markdown supported by the watch', () => {
   assert.match(promptText, /bullet or numbered lists/);
   assert.match(promptText, /`inline code`/);
   assert.match(promptText, /Avoid tables/);
+});
+
+test('the system prompt guides proactive memory and avoids unnecessary choice prompts', () => {
+  const runtime = createRuntime({ EnableMemory: '1', EnableChoice: '1' });
+  const promptText = runtime.context.buildSystemPrompt();
+
+  assert.match(promptText, /save stable preferences and personal facts/i);
+  assert.match(promptText, /Do not save temporary or sensitive information/i);
+  assert.match(promptText, /Do not use Choice for ordinary factual questions/i);
+  assert.match(promptText, /Do not include "Say your own"/i);
 });
 
 test('configured reasoning effort is sent but excluded from output', () => {

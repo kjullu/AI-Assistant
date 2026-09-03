@@ -163,29 +163,32 @@ module.exports = [
         "defaultValue": true
       },
       {
-        "type": "input",
+        "type": "textarea",
         "messageKey": "ExtraSystemPrompt",
         "label": "Extra System Prompt",
         "description": "Optional system-level instructions added as a separate message.",
         "attributes": {
+          "rows": 5,
           "placeholder": "Example: Always reply in pirate speak"
         }
       },
       {
-        "type": "input",
+        "type": "textarea",
         "messageKey": "NotesMemoryText",
         "label": "Memory Notes",
         "description": "One note per line. These are sent to the AI as memory.",
         "attributes": {
+          "rows": 5,
           "placeholder": "Users name is Bob."
         }
       },
       {
-        "type": "input",
+        "type": "textarea",
         "messageKey": "OpenSessions",
         "label": "Saved Sessions",
         "description": "Last 20 sessions. Delete by editing this field and saving.",
         "attributes": {
+          "rows": 8,
           "placeholder": "No saved sessions yet."
         }
       }
