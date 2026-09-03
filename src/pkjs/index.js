@@ -2,6 +2,7 @@ var Clay = require('@rebble/clay');
 var messageKeys = require('message_keys');
 var clayConfig = require('./config');
 var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+clay.registerComponent(require('./textarea'));
 
 var OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 var OPENROUTER_CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
@@ -1173,7 +1174,7 @@ function buildSystemPrompt() {
   }
 
   if (choiceAvailable) {
-    lines.push('Use Choice when the user should pick. Keep options under 30 characters and provide at most 7.');
+    lines.push('Use Choice when the user needs to decide or when a brief clarification has a few likely answers. Do not use Choice for ordinary factual questions or when a direct answer is better. Keep options under 30 characters and provide at most 7. Do not include "Say your own"; the watch adds it automatically.');
   }
 
   if (timelineAvailable) {
@@ -1185,7 +1186,7 @@ function buildSystemPrompt() {
   }
 
   if (memoryAvailable) {
-    lines.push('Use Memory only for durable preferences, facts, or explicit remember requests.');
+    lines.push('When Memory is enabled, save stable preferences and personal facts that are likely to help in future conversations. Do not save temporary or sensitive information unless the user explicitly asks.');
   }
   if (calculatorAvailable) {
     lines.push('Use Calculator for exact arithmetic, physical-unit conversions, or current currency conversion through Frankfurter.');
