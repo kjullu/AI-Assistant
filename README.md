@@ -1,6 +1,6 @@
-# Pebble AI Assistant
+# AI Assistant
 
-Pebble AI Assistant is a configurable Pebble watchapp for dictating prompts and reading streamed AI replies on your wrist. The phone-side PebbleKit JS app sends requests to a selected model through OpenRouter.
+AI Assistant is a configurable watchapp for Pebble smartwatches that lets you dictate prompts and read streamed AI replies on your wrist. The phone-side PebbleKit JS app sends requests to a selected model through OpenRouter.
 
 The app targets the `basalt`, `diorite`, and `emery` Pebble platforms.
 
