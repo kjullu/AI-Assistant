@@ -164,22 +164,22 @@ module.exports = [
       },
       {
         "type": "textarea",
+        "messageKey": "NotesMemoryText",
+        "label": "Memory Notes",
+        "description": "One note per line. These are sent to the AI as memory.",
+        "attributes": {
+          "rows": 5,
+          "placeholder": "User's name is Bob."
+        }
+      },
+      {
+        "type": "textarea",
         "messageKey": "ExtraSystemPrompt",
         "label": "Extra System Prompt",
         "description": "Optional system-level instructions added as a separate message.",
         "attributes": {
           "rows": 5,
           "placeholder": "Example: Always reply in pirate speak"
-        }
-      },
-      {
-        "type": "textarea",
-        "messageKey": "NotesMemoryText",
-        "label": "Memory Notes",
-        "description": "One note per line. These are sent to the AI as memory.",
-        "attributes": {
-          "rows": 5,
-          "placeholder": "Users name is Bob."
         }
       },
       {

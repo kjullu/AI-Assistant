@@ -27,3 +27,13 @@ test('multiline settings stay within the section padding', () => {
   assert.match(textarea.style, /width:100%;min-width:0;max-width:none/);
   assert.match(textarea.style, /margin-left:0/);
 });
+
+test('memory toggle and notes are adjacent in phone settings', () => {
+  const section = config.find((item) =>
+    item.type === 'section' &&
+    item.items.some((child) => child.messageKey === 'EnableMemory')
+  );
+  const keys = section.items.map((item) => item.messageKey).filter(Boolean);
+
+  assert.deepEqual(keys.slice(0, 2), ['EnableMemory', 'NotesMemoryText']);
+});
