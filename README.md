@@ -4,6 +4,8 @@ AI Assistant is a configurable watchapp for Pebble smartwatches that lets you di
 
 The app targets the `basalt`, `diorite`, and `emery` Pebble platforms.
 
+Store pages: [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b60009445123) and [RePebble](https://apps.repebble.com/cf78a459465f436ab859ad27).
+
 ## What It Does
 
 - Dictates prompts through Pebble's built-in voice input.
