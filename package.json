@@ -13,7 +13,7 @@
     "@rebble/clay": "^1.0.6"
   },
   "pebble": {
-    "displayName": "Pebble AI Assistant",
+    "displayName": "AI Assistant",
     "uuid": "3d9a0c31-569d-46bf-b7bf-6fed7b951d4a",
     "sdkVersion": "3",
     "enableMultiJS": true,
