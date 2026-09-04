@@ -1,3 +1,7 @@
+# 0.4.1
+
+- Update the app name to AI Assistant.
+
 # 0.4.0
 
 - Fix multiline system prompts, memory notes, and saved sessions collapsing or overflowing when edited in phone settings.
