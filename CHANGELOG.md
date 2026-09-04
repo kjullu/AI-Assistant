@@ -1,6 +1,9 @@
-# 0.4.0
+# 0.4.1
 
 - Update the app name to AI Assistant.
+
+# 0.4.0
+
 - Fix multiline system prompts, memory notes, and saved sessions collapsing or overflowing when edited in phone settings.
 - Move Memory Notes next to the Enable Memory setting.
 - Update Memory and Choice guidance to save useful durable facts and avoid unnecessary choice prompts.
