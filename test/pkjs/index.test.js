@@ -407,6 +407,14 @@ test('enabled tools are sent as OpenAI-compatible function schemas', () => {
   assert.equal(body.tools.some(tool => tool.function.name === 'location'), false);
 });
 
+test('location setting exposes the OpenStreetMap nearby places tool', () => {
+  const runtime = createRuntime({ EnableLocation: '1' });
+  const nearby = runtime.context.buildToolDefinitions().find(tool => tool.function.name === 'nearby_places');
+  assert.deepEqual(JSON.parse(JSON.stringify(nearby.function.parameters.required)), ['query']);
+  assert.equal(nearby.function.parameters.properties.radiusMeters.type, 'number');
+  assert.match(runtime.context.buildSystemPrompt(), /Opening hours come from OpenStreetMap/);
+});
+
 test('streamed native tool-call fragments are assembled before execution', () => {
   const runtime = createRuntime();
   prompt(runtime, 'What is two plus two?');
@@ -570,6 +578,51 @@ test('tool activity says when weather uses current-location GPS', () => {
     runtime.context.toolActivityLabel({ name: 'location', arguments: {} }),
     'Location tool: phone GPS'
   );
+  assert.equal(
+    runtime.context.toolActivityLabel({ name: 'nearby_places', arguments: { query: 'supermarket' } }),
+    'OpenStreetMap tool: supermarket'
+  );
+});
+
+test('nearby places searches around GPS and sorts OpenStreetMap results by distance', () => {
+  const runtime = createRuntime({ EnableLocation: '1' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  let result;
+  let error;
+  runtime.context.runNearbyPlacesTool(
+    { query: 'supermarket', radiusMeters: 2000 },
+    runtime.context.requestGeneration,
+    (content, problem) => { result = content; error = problem; }
+  );
+
+  const request = runtime.requests.find(candidate => candidate.url && candidate.url.includes('nominatim.openstreetmap.org/search'));
+  assert.match(request.url, /q=supermarket/);
+  assert.match(request.url, /bounded=1/);
+  assert.match(request.url, /extratags=1/);
+  request.status = 200;
+  request.responseText = JSON.stringify([
+    { name: 'Far Shop', lat: '55.6810', lon: '12.5683', address: { road: 'Far Road', house_number: '9' }, extratags: {} },
+    { name: 'Near Shop', lat: '55.6770', lon: '12.5683', address: { road: 'Near Road', house_number: '1', postcode: '1000', city: 'Copenhagen' }, extratags: { opening_hours: 'Mo-Su 07:00-22:00', phone: '+45 12345678' } }
+  ]);
+  request.onload();
+
+  assert.equal(error, null);
+  assert.ok(result.indexOf('Near Shop') < result.indexOf('Far Shop'));
+  assert.match(result, /listed hours: Mo-Su 07:00-22:00/);
+  assert.match(result, /Near Road 1, 1000 Copenhagen/);
+  assert.match(result, /phone: \+45 12345678/);
+});
+
+test('nearby places requires the Location setting', () => {
+  const runtime = createRuntime({ EnableLocation: '0' });
+  let error;
+  runtime.context.runNearbyPlacesTool({ query: 'pharmacy' }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
+  assert.match(error, /Location access disabled/);
+  assert.equal(runtime.requests.length, 0);
 });
 
 test('calculator fetches and caches current currency rates', () => {

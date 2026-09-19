@@ -1,6 +1,7 @@
 # 0.4.1
 
 - Update the app name to AI Assistant.
+- Add an OpenStreetMap nearby-places tool with distance-sorted stores and services, addresses, contributed opening hours, and contact details.
 
 # 0.4.0
 
