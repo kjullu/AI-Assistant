@@ -12,6 +12,7 @@ var FIRECRAWL_SCRAPE_URL = 'https://api.firecrawl.dev/v1/scrape';
 var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
+var NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
 var TIMELINE_URL = 'https://timeline-api.getpebble.com/v1/user/pins/';
 var FRANKFURTER_RATE_URL = 'https://api.frankfurter.dev/v2/rate/';
 
@@ -45,6 +46,7 @@ var STREAM_WATCHDOG_MS = 30000; // Wait longer before falling back from streamin
 var MAX_TOOL_CALLS = 8;
 var MAX_TOOL_ROUNDS = 5;
 var MAX_PARALLEL_TOOLS = 3;
+var MAX_NEARBY_RESULTS = 5;
 var MAX_SEND_ATTEMPTS = 3;
 var WATCH_RENDER_GAP_MS = 150;
 var MAX_HISTORY_MESSAGES = 24;
@@ -1170,7 +1172,7 @@ function buildSystemPrompt() {
     lines.push('For weather where the user is now, set place to exactly "current location". The weather tool reads the phone coordinates when Location is enabled, so do not call the Location tool first. Accept named regions like states, countries, or broad areas such as "central Europe".');
   }
   if (locationAvailable) {
-    lines.push('Use Location for the user location, nearby places, or "where am I" requests.');
+    lines.push('Use Location for "where am I" requests. Use Nearby Places to find stores, services, restaurants, or other places near the user. Opening hours come from OpenStreetMap and may be missing or stale, so describe them as listed hours rather than guaranteed hours.');
   }
 
   if (choiceAvailable) {
@@ -1231,6 +1233,10 @@ function buildToolDefinitions() {
   }
   if (getBoolSetting('EnableLocation', false)) {
     tools.push(functionTool('location', 'Get the user location from the phone GPS.', {}, []));
+    tools.push(functionTool('nearby_places', 'Find nearby stores, services, restaurants, or other places using phone GPS and OpenStreetMap.', {
+      query: { type: 'string', description: 'Place name or type, such as supermarket, pharmacy, coffee, or Netto.' },
+      radiusMeters: { type: 'number', description: 'Search radius from 100 to 10000 meters. Defaults to 3000.' }
+    }, ['query']));
   }
   if (getBoolSetting('EnableChoice', true)) {
     tools.push(functionTool('choice', 'Ask the user to choose on the watch.', {
@@ -1854,6 +1860,112 @@ function runLocationTool(generation, callback) {
   });
 }
 
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  var radians = Math.PI / 180;
+  var dLat = (lat2 - lat1) * radians;
+  var dLon = (lon2 - lon1) * radians;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * radians) * Math.cos(lat2 * radians) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function nearbyAddress(place) {
+  var address = place.address || {};
+  var road = address.road || address.pedestrian || address.residential || '';
+  var street = road && address.house_number ? road + ' ' + address.house_number : road;
+  var locality = address.city || address.town || address.village || address.municipality || address.suburb || '';
+  var parts = [];
+  if (street) parts.push(street);
+  if (address.postcode || locality) parts.push((address.postcode ? address.postcode + ' ' : '') + locality);
+  return parts.join(', ') || place.display_name || 'Address not listed';
+}
+
+function formatNearbyPlaces(query, originLat, originLon, places, radiusMeters) {
+  var matches = places.map(function(place) {
+    place._distance = distanceMeters(originLat, originLon, Number(place.lat), Number(place.lon));
+    return place;
+  }).filter(function(place) {
+    return isFinite(place._distance) && place._distance <= radiusMeters;
+  }).sort(function(a, b) {
+    return a._distance - b._distance;
+  }).slice(0, MAX_NEARBY_RESULTS);
+
+  if (!matches.length) return 'No OpenStreetMap matches found for "' + query + '" within ' + radiusMeters + ' meters.';
+  var lines = ['Nearby OpenStreetMap results for "' + query + '":'];
+  matches.forEach(function(place, index) {
+    var tags = place.extratags || {};
+    var name = place.name || (place.namedetails && place.namedetails.name) || String(place.display_name || '').split(',')[0] || query;
+    var details = (index + 1) + '. ' + name + ' - ' + Math.round(place._distance) + ' m - ' + nearbyAddress(place);
+    details += tags.opening_hours ? ' - listed hours: ' + tags.opening_hours : ' - opening hours not listed';
+    if (tags.phone || tags['contact:phone']) details += ' - phone: ' + (tags.phone || tags['contact:phone']);
+    if (tags.website || tags['contact:website']) details += ' - website: ' + (tags.website || tags['contact:website']);
+    lines.push(details);
+  });
+  return lines.join('\n');
+}
+
+function runNearbyPlacesTool(args, generation, callback) {
+  if (!getBoolSetting('EnableLocation', false)) {
+    callback(null, 'Location access disabled. Enable Give AI Location to search nearby places.');
+    return;
+  }
+  var query = String(args && args.query || '').replace(/^\s+|\s+$/g, '');
+  if (!query) {
+    callback(null, 'No place name or type provided.');
+    return;
+  }
+  if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
+    callback(null, 'Location unavailable on this phone.');
+    return;
+  }
+  var radius = Number(args.radiusMeters || 3000);
+  if (!isFinite(radius)) radius = 3000;
+  radius = Math.max(100, Math.min(10000, Math.round(radius)));
+
+  navigator.geolocation.getCurrentPosition(function(pos) {
+    if (generation !== requestGeneration) return;
+    var lat = Number(pos.coords.latitude);
+    var lon = Number(pos.coords.longitude);
+    var latDelta = radius / 111320;
+    var lonScale = Math.max(0.2, Math.cos(lat * Math.PI / 180));
+    var lonDelta = radius / (111320 * lonScale);
+    var viewbox = [lon - lonDelta, lat + latDelta, lon + lonDelta, lat - latDelta].join(',');
+    var request = new XMLHttpRequest();
+    trackRequest(request, generation);
+    var url = NOMINATIM_SEARCH_URL + '?format=jsonv2&addressdetails=1&extratags=1&namedetails=1&limit=20&bounded=1' +
+      '&q=' + encodeURIComponent(query) + '&viewbox=' + encodeURIComponent(viewbox);
+    request.open('GET', url, true);
+    request.setRequestHeader('Accept', 'application/json');
+    request.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+    request.timeout = 15000;
+    request.onload = function() {
+      untrackRequest(request);
+      if (!requestIsCurrent(request)) return;
+      if (request.status < 200 || request.status >= 300) {
+        callback(null, 'OpenStreetMap nearby search failed (' + request.status + ').');
+        return;
+      }
+      try {
+        callback(formatNearbyPlaces(query, lat, lon, JSON.parse(request.responseText), radius), null);
+      } catch (err) {
+        callback(null, 'OpenStreetMap returned an unreadable nearby search response.');
+      }
+    };
+    request.onerror = function() {
+      untrackRequest(request);
+      if (requestIsCurrent(request)) callback(null, 'Unable to reach OpenStreetMap for nearby search.');
+    };
+    request.ontimeout = function() {
+      untrackRequest(request);
+      if (requestIsCurrent(request)) callback(null, 'OpenStreetMap nearby search timed out.');
+    };
+    request.send();
+  }, function(err) {
+    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
+  }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
+}
+
 function parseNativeToolCalls(rawCalls) {
   var calls = [];
   rawCalls = rawCalls || [];
@@ -2475,6 +2587,8 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
     runWeatherTool(args, generation, callback);
   } else if (name === 'location') {
     runLocationTool(generation, callback);
+  } else if (name === 'nearby_places') {
+    runNearbyPlacesTool(args, generation, callback);
   } else if (name === 'calculator') {
     if (!getBoolSetting('EnableCalculator', true)) {
       callback(null, 'Calculator disabled.');
@@ -2511,6 +2625,7 @@ function toolActivityLabel(call) {
     scrape: 'Firecrawl Scrape',
     weather: 'Weather',
     location: 'Location',
+    nearby_places: 'OpenStreetMap',
     calculator: 'Calculator',
     choice: 'Choice',
     health: 'Health',
@@ -2523,6 +2638,9 @@ function toolActivityLabel(call) {
   }
   if (name === 'location') {
     return label + ': phone GPS';
+  }
+  if (name === 'nearby_places' && args.query) {
+    return label + ': ' + clip(String(args.query), 48);
   }
   if (name === 'search' && args.query) {
     return label + ': ' + clip(args.query, 60);
