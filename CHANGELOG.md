@@ -2,6 +2,7 @@
 
 - Update the app name to AI Assistant.
 - Add an OpenStreetMap nearby-places tool with distance-sorted stores and services, addresses, contributed opening hours, and contact details.
+- Add driving directions from the phone's current location using OSRM and OpenStreetMap road data.
 
 # 0.4.0
 
