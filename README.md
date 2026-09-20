@@ -110,6 +110,7 @@ Enabled tools may send data to other services:
 
 - `Location`: the phone obtains its coordinates and sends them to Nominatim for reverse geocoding. The coordinates, reported accuracy, and approximate place name are then returned to the selected model through OpenRouter.
 - `Nearby Places`: when Location is enabled, the phone sends its coordinates and the requested place type or name to Nominatim. Up to five nearby OpenStreetMap results, distances, addresses, and contributed opening hours or contact details are returned to the selected model. OpenStreetMap details may be incomplete or stale.
+- `Directions`: when Location is enabled, the phone sends its coordinates and destination coordinates to the public OSRM service. OSRM returns driving distance, estimated duration, and turn-by-turn steps based on OpenStreetMap road data. Routes are best-effort and should be checked against road signs and local rules.
 - `Brave Search`: search queries are sent to Brave Search using the configured API key. Up to three results are returned to the model.
 - `Firecrawl Scrape`: requested page URLs are sent to Firecrawl using the configured API key. Readable page content is returned to the model and truncated to 4,000 characters.
 - `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts. Current-location requests send the phone coordinates directly to Open-Meteo when Location is enabled.
