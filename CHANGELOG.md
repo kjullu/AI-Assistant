@@ -1,6 +1,7 @@
 # 0.4.1
 
 - Update the app name to AI Assistant.
+- Add a separately enabled OpenStreetMap tool for nearby places and OSRM driving directions, with distance-sorted results, business details, and turn-by-turn steps.
 
 # 0.4.0
 

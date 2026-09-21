@@ -39,7 +39,7 @@ Store pages: [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b6000
 - `SELECT`: enable or disable the selected tool.
 - `BACK`: return to the previous screen.
 
-The watch can toggle Location, Memory, Calculator, Search, Weather, Choice, Timeline, and Health. Firecrawl Scrape can only be configured from the phone settings.
+The watch can toggle Location, OpenStreetMap, Memory, Calculator, Search, Weather, Choice, Timeline, and Health. Firecrawl Scrape can only be configured from the phone settings.
 
 ### Saved Conversations
 
@@ -91,6 +91,7 @@ Reopen settings after changing the model to refresh its providers and reasoning 
 ### Tools
 
 - `Location`: disabled by default. Lets the model request the phone's current coordinates and an approximate place name.
+- `OpenStreetMap`: disabled by default. Lets the model find nearby places and request driving directions from the phone's current position. This setting does not enable the general Location tool.
 - `Memory`: enabled by default. Lets the model add or replace persistent notes, which can also be edited in phone settings.
 - `Calculator`: enabled by default. Supports arithmetic, compatible physical-unit conversions, and current currency conversion.
 - `Brave Search`: disabled by default and requires a separate Brave Search API key.
@@ -109,6 +110,7 @@ Dictated prompts, recent conversation context, enabled memory notes, extra syste
 Enabled tools may send data to other services:
 
 - `Location`: the phone obtains its coordinates and sends them to Nominatim for reverse geocoding. The coordinates, reported accuracy, and approximate place name are then returned to the selected model through OpenRouter.
+- `OpenStreetMap`: the phone sends its coordinates and requested place type or name to Nominatim for nearby searches. For directions, it sends the start and destination coordinates to the public OSRM service. The tool returns nearby results or driving distance, estimated duration, and turn-by-turn steps to the selected model. Map details and routes are best-effort and may be incomplete or stale.
 - `Brave Search`: search queries are sent to Brave Search using the configured API key. Up to three results are returned to the model.
 - `Firecrawl Scrape`: requested page URLs are sent to Firecrawl using the configured API key. Readable page content is returned to the model and truncated to 4,000 characters.
 - `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts. Current-location requests send the phone coordinates directly to Open-Meteo when Location is enabled.
@@ -117,6 +119,8 @@ Enabled tools may send data to other services:
 - `Health`: requested steps, active time, distance, sleep, calories, and supported heart-rate aggregates are read from Pebble Health and returned to the selected model through OpenRouter. Ranges that include today also include available current heart rate and activity data. Availability depends on the watch and requested date range.
 
 Choice prompts and memory changes are handled by the watch and phone app, but their results become part of the conversation sent to OpenRouter.
+
+OpenStreetMap is a trademark of the OpenStreetMap Foundation and is used with their permission. AI Assistant is not endorsed by or affiliated with the OpenStreetMap Foundation. Map data is © OpenStreetMap contributors and available under the Open Database License.
 
 API keys, memory notes, saved conversations, statistics, settings, cached currency rates, cached model capabilities, and sanitized debug metadata are stored in the Pebble phone app's local storage. Saved conversations contain conversation text and can be viewed or edited in phone settings. Health access is disabled by default, and Health responses are informational rather than medical advice.
 

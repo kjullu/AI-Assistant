@@ -37,3 +37,13 @@ test('memory toggle and notes are adjacent in phone settings', () => {
 
   assert.deepEqual(keys.slice(0, 2), ['EnableMemory', 'NotesMemoryText']);
 });
+
+test('OpenStreetMap has its own phone setting with a GPS disclosure', () => {
+  const section = config.find((item) =>
+    item.type === 'section' &&
+    item.items.some((child) => child.messageKey === 'EnableOpenStreetMap')
+  );
+  const item = section.items.find((child) => child.messageKey === 'EnableOpenStreetMap');
+  assert.equal(item.defaultValue, false);
+  assert.match(item.description, /phone location is sent to Nominatim or OSRM/);
+});

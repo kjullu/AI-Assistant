@@ -338,6 +338,26 @@ test('phone settings save the OpenRouter routing priority', () => {
   assert.equal(runtime.storage.get('OpenRouterSort'), 'latency');
 });
 
+test('phone settings save OpenStreetMap independently from Location', () => {
+  const runtime = createRuntime({ EnableLocation: '0', EnableOpenStreetMap: '0' });
+  runtime.setClaySettings({
+    converted: {},
+    raw: { EnableOpenStreetMap: { value: true } }
+  });
+  runtime.listeners.webviewclosed({ response: 'saved' });
+  assert.equal(runtime.storage.get('EnableOpenStreetMap'), '1');
+  assert.equal(runtime.storage.get('EnableLocation'), '0');
+});
+
+test('watch toggles OpenStreetMap independently from Location', () => {
+  const runtime = createRuntime({ EnableLocation: '0', EnableOpenStreetMap: '0' });
+  runtime.listeners.appmessage({ payload: { ToggleOpenStreetMap: 1 } });
+  assert.equal(runtime.storage.get('EnableOpenStreetMap'), '1');
+  assert.equal(runtime.storage.get('EnableLocation'), '0');
+  assert.ok(runtime.sentMessages.some(message => message.Status === 'OpenStreetMap on'));
+  assert.ok(runtime.sentMessages.some(message => /openstreetmap=1/.test(message.ToolStates || '')));
+});
+
 test('provider options use exact endpoint tags and disambiguate variants', () => {
   const runtime = createRuntime();
   const options = JSON.parse(JSON.stringify(runtime.context.providerOptionsForEndpoints([
@@ -405,6 +425,49 @@ test('enabled tools are sent as OpenAI-compatible function schemas', () => {
   assert.deepEqual(weather.function.parameters.required, ['place', 'timeframe']);
   assert.equal(weather.function.parameters.additionalProperties, false);
   assert.equal(body.tools.some(tool => tool.function.name === 'location'), false);
+});
+
+test('OpenStreetMap setting exposes one tool with nearby and directions actions', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  const mapTool = runtime.context.buildToolDefinitions().find(tool => tool.function.name === 'openstreetmap');
+  assert.deepEqual(JSON.parse(JSON.stringify(mapTool.function.parameters.required)), ['action']);
+  assert.deepEqual(JSON.parse(JSON.stringify(mapTool.function.parameters.properties.action.enum)), ['nearby_places', 'directions']);
+  assert.equal(mapTool.function.parameters.properties.radiusMeters.type, 'number');
+  assert.equal(mapTool.function.parameters.properties.destinationLatitude.type, 'number');
+  assert.equal(runtime.context.buildToolDefinitions().some(tool => tool.function.name === 'location'), false);
+  assert.match(runtime.context.buildSystemPrompt(), /Opening hours may be missing or stale/);
+  assert.match(runtime.context.buildSystemPrompt(), /driving directions/);
+});
+
+test('Location does not enable the OpenStreetMap tool', () => {
+  const runtime = createRuntime({ EnableLocation: '1', EnableOpenStreetMap: '0' });
+  const tools = runtime.context.buildToolDefinitions();
+  assert.equal(tools.some(tool => tool.function.name === 'location'), true);
+  assert.equal(tools.some(tool => tool.function.name === 'openstreetmap'), false);
+});
+
+test('OpenStreetMap dispatcher runs the requested action', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  runtime.context.executeNamedTool({
+    name: 'openstreetmap',
+    arguments: { action: 'nearby_places', query: 'pharmacy' }
+  }, runtime.context.requestGeneration, 1, 'test', () => {});
+  assert.ok(runtime.requests.some(request => request.url && /nominatim\.openstreetmap\.org\/search/.test(request.url)));
+});
+
+test('OpenStreetMap dispatcher rejects an unknown action', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  let error;
+  runtime.context.executeNamedTool({
+    name: 'openstreetmap',
+    arguments: { action: 'unknown' }
+  }, runtime.context.requestGeneration, 1, 'test', (content, problem) => { error = problem; });
+  assert.match(error, /action must be nearby_places or directions/);
 });
 
 test('streamed native tool-call fragments are assembled before execution', () => {
@@ -570,6 +633,128 @@ test('tool activity says when weather uses current-location GPS', () => {
     runtime.context.toolActivityLabel({ name: 'location', arguments: {} }),
     'Location tool: phone GPS'
   );
+  assert.equal(
+    runtime.context.toolActivityLabel({ name: 'openstreetmap', arguments: { action: 'nearby_places', query: 'supermarket' } }),
+    'OpenStreetMap tool: supermarket'
+  );
+  assert.equal(
+    runtime.context.toolActivityLabel({ name: 'openstreetmap', arguments: { action: 'directions', destination: 'Burger King' } }),
+    'OpenStreetMap tool: Burger King'
+  );
+});
+
+test('nearby places searches around GPS and sorts OpenStreetMap results by distance', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  let result;
+  let error;
+  runtime.context.runNearbyPlacesTool(
+    { query: 'supermarket', radiusMeters: 2000 },
+    runtime.context.requestGeneration,
+    (content, problem) => { result = content; error = problem; }
+  );
+
+  const request = runtime.requests.find(candidate => candidate.url && candidate.url.includes('nominatim.openstreetmap.org/search'));
+  assert.match(request.url, /q=supermarket/);
+  assert.match(request.url, /bounded=1/);
+  assert.match(request.url, /extratags=1/);
+  request.status = 200;
+  request.responseText = JSON.stringify([
+    { name: 'Far Shop', lat: '55.6810', lon: '12.5683', address: { road: 'Far Road', house_number: '9' }, extratags: {} },
+    { name: 'Near Shop', lat: '55.6770', lon: '12.5683', address: { road: 'Near Road', house_number: '1', postcode: '1000', city: 'Copenhagen' }, extratags: { opening_hours: 'Mo-Su 07:00-22:00', phone: '+45 12345678' } }
+  ]);
+  request.onload();
+
+  assert.equal(error, null);
+  assert.ok(result.indexOf('Near Shop') < result.indexOf('Far Shop'));
+  assert.match(result, /listed hours: Mo-Su 07:00-22:00/);
+  assert.match(result, /Near Road 1, 1000 Copenhagen/);
+  assert.match(result, /latitude 55\.6770, longitude 12\.5683/);
+  assert.match(result, /phone: \+45 12345678/);
+});
+
+test('nearby places requires the OpenStreetMap setting', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '0', EnableLocation: '1' });
+  let error;
+  runtime.context.runNearbyPlacesTool({ query: 'pharmacy' }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
+  assert.match(error, /OpenStreetMap access disabled/);
+  assert.equal(runtime.requests.length, 0);
+});
+
+test('directions routes from GPS to coordinates supplied by a nearby result', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  let result;
+  let error;
+  runtime.context.runDirectionsTool({
+    destination: 'Burger King',
+    destinationLatitude: 55.6800,
+    destinationLongitude: 12.5750
+  }, runtime.context.requestGeneration, (content, problem) => { result = content; error = problem; });
+
+  assert.equal(runtime.requests.some(request => request.url && request.url.includes('nominatim.openstreetmap.org/search')), false);
+  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  assert.match(route.url, /12\.5683,55\.6761;12\.575,55\.68/);
+  assert.match(route.url, /steps=true&overview=false/);
+  route.status = 200;
+  route.responseText = JSON.stringify({
+    code: 'Ok',
+    routes: [{
+      distance: 1234,
+      duration: 480,
+      legs: [{ steps: [
+        { distance: 400, name: 'Main Street', maneuver: { type: 'depart', modifier: 'north' } },
+        { distance: 800, name: 'King Road', maneuver: { type: 'turn', modifier: 'right' } },
+        { distance: 0, name: '', maneuver: { type: 'arrive' } }
+      ] }]
+    }]
+  });
+  route.onload();
+
+  assert.equal(error, null);
+  assert.match(result, /Driving directions to Burger King: 1\.2 km, about 8 min/);
+  assert.match(result, /Head north on Main Street for 400 m/);
+  assert.match(result, /Turn right onto King Road for 800 m/);
+  assert.match(result, /Route source: OSRM using OpenStreetMap data/);
+});
+
+test('directions resolves a named destination near the current location before routing', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  runtime.context.runDirectionsTool({ destination: 'Burger King' }, runtime.context.requestGeneration, () => {});
+
+  const search = runtime.requests.find(request => request.url && request.url.includes('nominatim.openstreetmap.org/search'));
+  assert.match(search.url, /q=Burger%20King/);
+  assert.match(search.url, /bounded=1/);
+  search.status = 200;
+  search.responseText = JSON.stringify([
+    { lat: '55.6900', lon: '12.5800' },
+    { lat: '55.6770', lon: '12.5690' }
+  ]);
+  search.onload();
+
+  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  assert.match(route.url, /12\.569,55\.677/);
+});
+
+test('directions requires the OpenStreetMap setting', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '0', EnableLocation: '1' });
+  let error;
+  runtime.context.runDirectionsTool({ destination: 'Burger King' }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
+  assert.match(error, /OpenStreetMap access disabled/);
+  assert.equal(runtime.requests.length, 0);
 });
 
 test('calculator fetches and caches current currency rates', () => {
