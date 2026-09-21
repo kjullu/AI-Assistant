@@ -746,6 +746,7 @@ function sendStatsToWatch() {
 function sendToolStatesToWatch() {
   sendToWatch({
     ToolStates: 'location=' + (getBoolSetting('EnableLocation', false) ? '1' : '0') +
+      ';openstreetmap=' + (getBoolSetting('EnableOpenStreetMap', false) ? '1' : '0') +
       ';memory=' + (getBoolSetting('EnableMemory', true) ? '1' : '0') +
       ';calculator=' + (getBoolSetting('EnableCalculator', true) ? '1' : '0') +
       ';search=' + (getBoolSetting('EnableSearch', false) ? '1' : '0') +
@@ -1067,6 +1068,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var apiKey = settingValue(convertedSettings, rawSettings, 'OpenRouterApiKey', messageKeys.OpenRouterApiKey);
   var model = settingValue(convertedSettings, rawSettings, 'OpenRouterModel', messageKeys.OpenRouterModel);
   var enableLocation = settingValue(convertedSettings, rawSettings, 'EnableLocation', messageKeys.EnableLocation);
+  var enableOpenStreetMap = settingValue(convertedSettings, rawSettings, 'EnableOpenStreetMap', messageKeys.EnableOpenStreetMap);
   var enableMemory = settingValue(convertedSettings, rawSettings, 'EnableMemory', messageKeys.EnableMemory);
   var enableCalculator = settingValue(convertedSettings, rawSettings, 'EnableCalculator', messageKeys.EnableCalculator);
   var enableSearch = settingValue(convertedSettings, rawSettings, 'EnableSearch', messageKeys.EnableSearch);
@@ -1095,6 +1097,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (enableLocation !== undefined) {
     localStorage.setItem('EnableLocation', String(enableLocation ? 1 : 0));
+  }
+  if (enableOpenStreetMap !== undefined) {
+    localStorage.setItem('EnableOpenStreetMap', String(enableOpenStreetMap ? 1 : 0));
   }
   if (enableMemory !== undefined) {
     localStorage.setItem('EnableMemory', String(enableMemory ? 1 : 0));
@@ -1154,6 +1159,7 @@ function buildSystemPrompt() {
   var memoryAvailable = getBoolSetting('EnableMemory', true);
   var calculatorAvailable = getBoolSetting('EnableCalculator', true);
   var locationAvailable = getBoolSetting('EnableLocation', false);
+  var openStreetMapAvailable = getBoolSetting('EnableOpenStreetMap', false);
   var choiceAvailable = getBoolSetting('EnableChoice', true);
   var timelineAvailable = getBoolSetting('EnableTimeline', true);
   var healthAvailable = getBoolSetting('EnableHealth', false);
@@ -1174,7 +1180,10 @@ function buildSystemPrompt() {
     lines.push('For weather where the user is now, set place to exactly "current location". The weather tool reads the phone coordinates when Location is enabled, so do not call the Location tool first. Accept named regions like states, countries, or broad areas such as "central Europe".');
   }
   if (locationAvailable) {
-    lines.push('Use Location for "where am I" requests. Use Nearby Places to find stores, services, restaurants, or other places near the user. Opening hours come from OpenStreetMap and may be missing or stale, so describe them as listed hours rather than guaranteed hours. Use Directions for driving directions from the current phone location. For directions to a nearby result, pass its latitude and longitude to Directions.');
+    lines.push('Use Location for "where am I" requests.');
+  }
+  if (openStreetMapAvailable) {
+    lines.push('Use the OpenStreetMap tool to find stores, services, restaurants, or other places near the user, and to get driving directions. Opening hours may be missing or stale, so describe them as listed hours rather than guaranteed hours. For directions to a nearby result, pass its latitude and longitude back to the OpenStreetMap tool with action "directions".');
   }
 
   if (choiceAvailable) {
@@ -1235,15 +1244,16 @@ function buildToolDefinitions() {
   }
   if (getBoolSetting('EnableLocation', false)) {
     tools.push(functionTool('location', 'Get the user location from the phone GPS.', {}, []));
-    tools.push(functionTool('nearby_places', 'Find nearby stores, services, restaurants, or other places using phone GPS and OpenStreetMap.', {
-      query: { type: 'string', description: 'Place name or type, such as supermarket, pharmacy, coffee, or Netto.' },
-      radiusMeters: { type: 'number', description: 'Search radius from 100 to 10000 meters. Defaults to 3000.' }
-    }, ['query']));
-    tools.push(functionTool('directions', 'Get driving directions from the current phone location using OpenStreetMap routing.', {
-      destination: { type: 'string', description: 'Destination name or address. Also used as the result label when coordinates are supplied.' },
-      destinationLatitude: { type: 'number', description: 'Destination latitude from a Nearby Places result.' },
-      destinationLongitude: { type: 'number', description: 'Destination longitude from a Nearby Places result.' }
-    }, ['destination']));
+  }
+  if (getBoolSetting('EnableOpenStreetMap', false)) {
+    tools.push(functionTool('openstreetmap', 'Find nearby places or get driving directions using phone GPS and OpenStreetMap data.', {
+      action: { type: 'string', enum: ['nearby_places', 'directions'], description: 'Use nearby_places to search, or directions to route.' },
+      query: { type: 'string', description: 'For nearby_places: a place name or type, such as supermarket, pharmacy, coffee, or Netto.' },
+      radiusMeters: { type: 'number', description: 'For nearby_places: search radius from 100 to 10000 meters. Defaults to 3000.' },
+      destination: { type: 'string', description: 'For directions: destination name, address, or result label.' },
+      destinationLatitude: { type: 'number', description: 'For directions: latitude from a nearby_places result.' },
+      destinationLongitude: { type: 'number', description: 'For directions: longitude from a nearby_places result.' }
+    }, ['action']));
   }
   if (getBoolSetting('EnableChoice', true)) {
     tools.push(functionTool('choice', 'Ask the user to choose on the watch.', {
@@ -1914,8 +1924,8 @@ function formatNearbyPlaces(query, originLat, originLon, places, radiusMeters) {
 }
 
 function runNearbyPlacesTool(args, generation, callback) {
-  if (!getBoolSetting('EnableLocation', false)) {
-    callback(null, 'Location access disabled. Enable Give AI Location to search nearby places.');
+  if (!getBoolSetting('EnableOpenStreetMap', false)) {
+    callback(null, 'OpenStreetMap access disabled. Enable OpenStreetMap to search nearby places.');
     return;
   }
   var query = String(args && args.query || '').replace(/^\s+|\s+$/g, '');
@@ -2047,8 +2057,8 @@ function requestDrivingRoute(startLat, startLon, destination, endLat, endLon, ge
 }
 
 function runDirectionsTool(args, generation, callback) {
-  if (!getBoolSetting('EnableLocation', false)) {
-    callback(null, 'Location access disabled. Enable Give AI Location to request directions.');
+  if (!getBoolSetting('EnableOpenStreetMap', false)) {
+    callback(null, 'OpenStreetMap access disabled. Enable OpenStreetMap to request directions.');
     return;
   }
   var destination = String(args && args.destination || '').replace(/^\s+|\s+$/g, '');
@@ -2738,10 +2748,14 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
     runWeatherTool(args, generation, callback);
   } else if (name === 'location') {
     runLocationTool(generation, callback);
-  } else if (name === 'nearby_places') {
-    runNearbyPlacesTool(args, generation, callback);
-  } else if (name === 'directions') {
-    runDirectionsTool(args, generation, callback);
+  } else if (name === 'openstreetmap') {
+    if (args.action === 'nearby_places') {
+      runNearbyPlacesTool(args, generation, callback);
+    } else if (args.action === 'directions') {
+      runDirectionsTool(args, generation, callback);
+    } else {
+      callback(null, 'OpenStreetMap action must be nearby_places or directions.');
+    }
   } else if (name === 'calculator') {
     if (!getBoolSetting('EnableCalculator', true)) {
       callback(null, 'Calculator disabled.');
@@ -2778,8 +2792,7 @@ function toolActivityLabel(call) {
     scrape: 'Firecrawl Scrape',
     weather: 'Weather',
     location: 'Location',
-    nearby_places: 'OpenStreetMap',
-    directions: 'Directions',
+    openstreetmap: 'OpenStreetMap',
     calculator: 'Calculator',
     choice: 'Choice',
     health: 'Health',
@@ -2793,10 +2806,10 @@ function toolActivityLabel(call) {
   if (name === 'location') {
     return label + ': phone GPS';
   }
-  if (name === 'nearby_places' && args.query) {
+  if (name === 'openstreetmap' && args.action === 'nearby_places' && args.query) {
     return label + ': ' + clip(String(args.query), 48);
   }
-  if (name === 'directions' && args.destination) {
+  if (name === 'openstreetmap' && args.action === 'directions' && args.destination) {
     return label + ': ' + clip(String(args.destination), 48);
   }
   if (name === 'search' && args.query) {
@@ -3140,6 +3153,14 @@ Pebble.addEventListener('appmessage', function(e) {
     return;
   }
 
+  if (e.payload && e.payload.ToggleOpenStreetMap) {
+    var openStreetMapEnabled = toggleBoolSetting('EnableOpenStreetMap', false);
+    sendToWatch({ Status: openStreetMapEnabled ? 'OpenStreetMap on' : 'OpenStreetMap off' });
+    sendToolStatesToWatch();
+    sendStatsToWatch();
+    return;
+  }
+
   if (e.payload && e.payload.ToggleMemory) {
     var memoryEnabled = toggleBoolSetting('EnableMemory', true);
     sendToWatch({ Status: memoryEnabled ? 'Memory on' : 'Memory off' });
@@ -3276,6 +3297,7 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     OpenRouterApiKey: getSetting('OpenRouterApiKey', ''),
     OpenRouterModel: model,
     EnableLocation: getBoolSetting('EnableLocation', false),
+    EnableOpenStreetMap: getBoolSetting('EnableOpenStreetMap', false),
     EnableMemory: getBoolSetting('EnableMemory', true),
     EnableCalculator: getBoolSetting('EnableCalculator', true),
     EnableSearch: getBoolSetting('EnableSearch', false),

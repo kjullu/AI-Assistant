@@ -338,6 +338,26 @@ test('phone settings save the OpenRouter routing priority', () => {
   assert.equal(runtime.storage.get('OpenRouterSort'), 'latency');
 });
 
+test('phone settings save OpenStreetMap independently from Location', () => {
+  const runtime = createRuntime({ EnableLocation: '0', EnableOpenStreetMap: '0' });
+  runtime.setClaySettings({
+    converted: {},
+    raw: { EnableOpenStreetMap: { value: true } }
+  });
+  runtime.listeners.webviewclosed({ response: 'saved' });
+  assert.equal(runtime.storage.get('EnableOpenStreetMap'), '1');
+  assert.equal(runtime.storage.get('EnableLocation'), '0');
+});
+
+test('watch toggles OpenStreetMap independently from Location', () => {
+  const runtime = createRuntime({ EnableLocation: '0', EnableOpenStreetMap: '0' });
+  runtime.listeners.appmessage({ payload: { ToggleOpenStreetMap: 1 } });
+  assert.equal(runtime.storage.get('EnableOpenStreetMap'), '1');
+  assert.equal(runtime.storage.get('EnableLocation'), '0');
+  assert.ok(runtime.sentMessages.some(message => message.Status === 'OpenStreetMap on'));
+  assert.ok(runtime.sentMessages.some(message => /openstreetmap=1/.test(message.ToolStates || '')));
+});
+
 test('provider options use exact endpoint tags and disambiguate variants', () => {
   const runtime = createRuntime();
   const options = JSON.parse(JSON.stringify(runtime.context.providerOptionsForEndpoints([
@@ -407,16 +427,47 @@ test('enabled tools are sent as OpenAI-compatible function schemas', () => {
   assert.equal(body.tools.some(tool => tool.function.name === 'location'), false);
 });
 
-test('location setting exposes the OpenStreetMap nearby places tool', () => {
-  const runtime = createRuntime({ EnableLocation: '1' });
-  const nearby = runtime.context.buildToolDefinitions().find(tool => tool.function.name === 'nearby_places');
-  const directions = runtime.context.buildToolDefinitions().find(tool => tool.function.name === 'directions');
-  assert.deepEqual(JSON.parse(JSON.stringify(nearby.function.parameters.required)), ['query']);
-  assert.equal(nearby.function.parameters.properties.radiusMeters.type, 'number');
-  assert.deepEqual(JSON.parse(JSON.stringify(directions.function.parameters.required)), ['destination']);
-  assert.equal(directions.function.parameters.properties.destinationLatitude.type, 'number');
-  assert.match(runtime.context.buildSystemPrompt(), /Opening hours come from OpenStreetMap/);
+test('OpenStreetMap setting exposes one tool with nearby and directions actions', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  const mapTool = runtime.context.buildToolDefinitions().find(tool => tool.function.name === 'openstreetmap');
+  assert.deepEqual(JSON.parse(JSON.stringify(mapTool.function.parameters.required)), ['action']);
+  assert.deepEqual(JSON.parse(JSON.stringify(mapTool.function.parameters.properties.action.enum)), ['nearby_places', 'directions']);
+  assert.equal(mapTool.function.parameters.properties.radiusMeters.type, 'number');
+  assert.equal(mapTool.function.parameters.properties.destinationLatitude.type, 'number');
+  assert.equal(runtime.context.buildToolDefinitions().some(tool => tool.function.name === 'location'), false);
+  assert.match(runtime.context.buildSystemPrompt(), /Opening hours may be missing or stale/);
   assert.match(runtime.context.buildSystemPrompt(), /driving directions/);
+});
+
+test('Location does not enable the OpenStreetMap tool', () => {
+  const runtime = createRuntime({ EnableLocation: '1', EnableOpenStreetMap: '0' });
+  const tools = runtime.context.buildToolDefinitions();
+  assert.equal(tools.some(tool => tool.function.name === 'location'), true);
+  assert.equal(tools.some(tool => tool.function.name === 'openstreetmap'), false);
+});
+
+test('OpenStreetMap dispatcher runs the requested action', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) {
+      success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+    }
+  };
+  runtime.context.executeNamedTool({
+    name: 'openstreetmap',
+    arguments: { action: 'nearby_places', query: 'pharmacy' }
+  }, runtime.context.requestGeneration, 1, 'test', () => {});
+  assert.ok(runtime.requests.some(request => request.url && /nominatim\.openstreetmap\.org\/search/.test(request.url)));
+});
+
+test('OpenStreetMap dispatcher rejects an unknown action', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  let error;
+  runtime.context.executeNamedTool({
+    name: 'openstreetmap',
+    arguments: { action: 'unknown' }
+  }, runtime.context.requestGeneration, 1, 'test', (content, problem) => { error = problem; });
+  assert.match(error, /action must be nearby_places or directions/);
 });
 
 test('streamed native tool-call fragments are assembled before execution', () => {
@@ -583,17 +634,17 @@ test('tool activity says when weather uses current-location GPS', () => {
     'Location tool: phone GPS'
   );
   assert.equal(
-    runtime.context.toolActivityLabel({ name: 'nearby_places', arguments: { query: 'supermarket' } }),
+    runtime.context.toolActivityLabel({ name: 'openstreetmap', arguments: { action: 'nearby_places', query: 'supermarket' } }),
     'OpenStreetMap tool: supermarket'
   );
   assert.equal(
-    runtime.context.toolActivityLabel({ name: 'directions', arguments: { destination: 'Burger King' } }),
-    'Directions tool: Burger King'
+    runtime.context.toolActivityLabel({ name: 'openstreetmap', arguments: { action: 'directions', destination: 'Burger King' } }),
+    'OpenStreetMap tool: Burger King'
   );
 });
 
 test('nearby places searches around GPS and sorts OpenStreetMap results by distance', () => {
-  const runtime = createRuntime({ EnableLocation: '1' });
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
   runtime.context.navigator.geolocation = {
     getCurrentPosition(success) {
       success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
@@ -626,16 +677,16 @@ test('nearby places searches around GPS and sorts OpenStreetMap results by dista
   assert.match(result, /phone: \+45 12345678/);
 });
 
-test('nearby places requires the Location setting', () => {
-  const runtime = createRuntime({ EnableLocation: '0' });
+test('nearby places requires the OpenStreetMap setting', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '0', EnableLocation: '1' });
   let error;
   runtime.context.runNearbyPlacesTool({ query: 'pharmacy' }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
-  assert.match(error, /Location access disabled/);
+  assert.match(error, /OpenStreetMap access disabled/);
   assert.equal(runtime.requests.length, 0);
 });
 
 test('directions routes from GPS to coordinates supplied by a nearby result', () => {
-  const runtime = createRuntime({ EnableLocation: '1' });
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
   runtime.context.navigator.geolocation = {
     getCurrentPosition(success) {
       success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
@@ -676,7 +727,7 @@ test('directions routes from GPS to coordinates supplied by a nearby result', ()
 });
 
 test('directions resolves a named destination near the current location before routing', () => {
-  const runtime = createRuntime({ EnableLocation: '1' });
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
   runtime.context.navigator.geolocation = {
     getCurrentPosition(success) {
       success({ coords: { latitude: 55.6761, longitude: 12.5683 } });
@@ -698,11 +749,11 @@ test('directions resolves a named destination near the current location before r
   assert.match(route.url, /12\.569,55\.677/);
 });
 
-test('directions requires the Location setting', () => {
-  const runtime = createRuntime({ EnableLocation: '0' });
+test('directions requires the OpenStreetMap setting', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '0', EnableLocation: '1' });
   let error;
   runtime.context.runDirectionsTool({ destination: 'Burger King' }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
-  assert.match(error, /Location access disabled/);
+  assert.match(error, /OpenStreetMap access disabled/);
   assert.equal(runtime.requests.length, 0);
 });
 

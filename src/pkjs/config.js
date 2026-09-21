@@ -90,6 +90,13 @@ module.exports = [
       },
       {
         "type": "toggle",
+        "messageKey": "EnableOpenStreetMap",
+        "label": "Enable OpenStreetMap",
+        "description": "Allows nearby-place searches and driving directions. Your phone location is sent to Nominatim or OSRM only when the AI uses this tool.",
+        "defaultValue": false
+      },
+      {
+        "type": "toggle",
         "messageKey": "EnableSearch",
         "label": "Enable Brave Search",
         "defaultValue": false
