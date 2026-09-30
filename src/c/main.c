@@ -86,6 +86,7 @@ static int s_new_session_selection;
 static bool s_settings_return_home;
 static int s_settings_selection;
 static bool s_location_enabled;
+static bool s_openstreetmap_enabled;
 static bool s_memory_enabled = true;
 static bool s_calculator_enabled = true;
 static bool s_search_enabled;
@@ -621,7 +622,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 8;
+  return 9;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -631,26 +632,30 @@ static void get_settings_row(int8_t index, SettingRow *out) {
       out->enabled = s_location_enabled;
       break;
     case 1:
+      out->label = "OpenStreetMap";
+      out->enabled = s_openstreetmap_enabled;
+      break;
+    case 2:
       out->label = "Memory";
       out->enabled = s_memory_enabled;
       break;
-    case 2:
+    case 3:
       out->label = "Calculator";
       out->enabled = s_calculator_enabled;
       break;
-    case 3:
+    case 4:
       out->label = "Search";
       out->enabled = s_search_enabled;
       break;
-    case 4:
+    case 5:
       out->label = "Weather";
       out->enabled = s_weather_enabled;
       break;
-    case 5:
+    case 6:
       out->label = "Choice";
       out->enabled = s_choice_enabled;
       break;
-    case 6:
+    case 7:
       out->label = "Timeline";
       out->enabled = s_timeline_enabled;
       break;
@@ -1747,6 +1752,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (tool_states_tuple) {
     const char *states = tool_states_tuple->value->cstring;
     s_location_enabled = strstr(states, "location=1") != NULL;
+    s_openstreetmap_enabled = strstr(states, "openstreetmap=1") != NULL;
     s_memory_enabled = strstr(states, "memory=1") != NULL;
     s_calculator_enabled = strstr(states, "calculator=1") != NULL;
     s_search_enabled = strstr(states, "search=1") != NULL;
@@ -2036,24 +2042,27 @@ static void toggle_selected_setting(void) {
       send_simple_command(MESSAGE_KEY_ToggleLocation, "Toggle failed");
       break;
     case 1:
-      send_simple_command(MESSAGE_KEY_ToggleMemory, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleOpenStreetMap, "Toggle failed");
       break;
     case 2:
-      send_simple_command(MESSAGE_KEY_ToggleCalculator, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleMemory, "Toggle failed");
       break;
     case 3:
-      send_simple_command(MESSAGE_KEY_ToggleSearch, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleCalculator, "Toggle failed");
       break;
     case 4:
-      send_simple_command(MESSAGE_KEY_ToggleWeather, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleSearch, "Toggle failed");
       break;
     case 5:
-      send_simple_command(MESSAGE_KEY_ToggleChoice, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleWeather, "Toggle failed");
       break;
     case 6:
-      send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleChoice, "Toggle failed");
       break;
     case 7:
+      send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
+      break;
+    case 8:
       send_simple_command(MESSAGE_KEY_ToggleHealth, "Toggle failed");
       break;
   }
