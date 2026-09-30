@@ -91,7 +91,7 @@ Reopen settings after changing the model to refresh its providers and reasoning 
 ### Tools
 
 - `Location`: disabled by default. Lets the model request the phone's current coordinates and an approximate place name.
-- `OpenStreetMap`: disabled by default. Lets the model find nearby places and request driving directions from the phone's current position. This setting does not enable the general Location tool.
+- `OpenStreetMap`: disabled by default. Lets the model find nearby places and request driving directions. Directions use an origin explicitly supplied by the user, or the phone's current position when no origin is supplied. This setting does not enable the general Location tool.
 - `Memory`: enabled by default. Lets the model add or replace persistent notes, which can also be edited in phone settings.
 - `Calculator`: enabled by default. Supports arithmetic, compatible physical-unit conversions, and current currency conversion.
 - `Brave Search`: disabled by default and requires a separate Brave Search API key.
@@ -110,7 +110,7 @@ Dictated prompts, recent conversation context, enabled memory notes, extra syste
 Enabled tools may send data to other services:
 
 - `Location`: the phone obtains its coordinates and sends them to Nominatim for reverse geocoding. The coordinates, reported accuracy, and approximate place name are then returned to the selected model through OpenRouter.
-- `OpenStreetMap`: the phone sends its coordinates and requested place type or name to Nominatim for nearby searches. For directions, it sends the start and destination coordinates to the public OSRM service. The tool returns nearby results or driving distance, estimated duration, and turn-by-turn steps to the selected model. Map details and routes are best-effort and may be incomplete or stale.
+- `OpenStreetMap`: the phone sends its coordinates and requested place type or name to Nominatim for nearby searches. Directions use user-supplied origin coordinates, geocode an explicitly named origin through Nominatim, or use phone GPS when no origin is supplied. Start and destination coordinates are sent to the public OSRM service. The tool returns nearby results or driving distance, estimated duration, and turn-by-turn steps to the selected model. Map details and routes are best-effort and may be incomplete or stale.
 - `Brave Search`: search queries are sent to Brave Search using the configured API key. Up to three results are returned to the model.
 - `Firecrawl Scrape`: requested page URLs are sent to Firecrawl using the configured API key. Readable page content is returned to the model and truncated to 4,000 characters.
 - `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts. Current-location requests send the phone coordinates directly to Open-Meteo when Location is enabled.

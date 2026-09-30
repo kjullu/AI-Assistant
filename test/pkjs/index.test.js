@@ -434,6 +434,8 @@ test('OpenStreetMap setting exposes one tool with nearby and directions actions'
   assert.deepEqual(JSON.parse(JSON.stringify(mapTool.function.parameters.properties.action.enum)), ['nearby_places', 'directions']);
   assert.equal(mapTool.function.parameters.properties.radiusMeters.type, 'number');
   assert.equal(mapTool.function.parameters.properties.destinationLatitude.type, 'number');
+  assert.equal(mapTool.function.parameters.properties.origin.type, 'string');
+  assert.equal(mapTool.function.parameters.properties.originLatitude.type, 'number');
   assert.equal(runtime.context.buildToolDefinitions().some(tool => tool.function.name === 'location'), false);
   assert.match(runtime.context.buildSystemPrompt(), /Opening hours may be missing or stale/);
   assert.match(runtime.context.buildSystemPrompt(), /driving directions/);
@@ -721,6 +723,7 @@ test('directions routes from GPS to coordinates supplied by a nearby result', ()
 
   assert.equal(error, null);
   assert.match(result, /Driving directions to Burger King: 1\.2 km, about 8 min/);
+  assert.match(result, /Starting point: phone GPS/);
   assert.match(result, /Head north on Main Street for 400 m/);
   assert.match(result, /Turn right onto King Road for 800 m/);
   assert.match(result, /Route source: OSRM using OpenStreetMap data/);
@@ -747,6 +750,58 @@ test('directions resolves a named destination near the current location before r
 
   const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
   assert.match(route.url, /12\.569,55\.677/);
+});
+
+test('directions geocodes an explicit named origin without using phone GPS', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition() { throw new Error('GPS should not be used'); }
+  };
+  runtime.context.runDirectionsTool({
+    origin: 'Copenhagen Central Station',
+    destination: 'Burger King',
+    destinationLatitude: 55.6750,
+    destinationLongitude: 12.5700
+  }, runtime.context.requestGeneration, () => {});
+
+  const originSearch = runtime.requests.find(request => request.url && /q=Copenhagen%20Central%20Station/.test(request.url));
+  assert.ok(originSearch);
+  originSearch.status = 200;
+  originSearch.responseText = JSON.stringify([{ lat: '55.6727', lon: '12.5648' }]);
+  originSearch.onload();
+
+  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  assert.match(route.url, /12\.5648,55\.6727;12\.57,55\.675/);
+});
+
+test('directions accepts explicit origin coordinates without GPS or origin geocoding', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1', EnableLocation: '0' });
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition() { throw new Error('GPS should not be used'); }
+  };
+  runtime.context.runDirectionsTool({
+    origin: 'Central Station',
+    originLatitude: 55.6727,
+    originLongitude: 12.5648,
+    destination: 'Burger King',
+    destinationLatitude: 55.6750,
+    destinationLongitude: 12.5700
+  }, runtime.context.requestGeneration, () => {});
+
+  assert.equal(runtime.requests.some(request => request.url && request.url.includes('nominatim.openstreetmap.org/search')), false);
+  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  assert.match(route.url, /12\.5648,55\.6727;12\.57,55\.675/);
+});
+
+test('directions rejects an incomplete explicit origin coordinate pair', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  let error;
+  runtime.context.runDirectionsTool({
+    destination: 'Burger King',
+    originLatitude: 55.6727
+  }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
+  assert.match(error, /require both latitude and longitude/);
+  assert.equal(runtime.requests.length, 0);
 });
 
 test('directions requires the OpenStreetMap setting', () => {
