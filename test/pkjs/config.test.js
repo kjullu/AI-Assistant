@@ -45,5 +45,6 @@ test('OpenStreetMap has its own phone setting with a GPS disclosure', () => {
   );
   const item = section.items.find((child) => child.messageKey === 'EnableOpenStreetMap');
   assert.equal(item.defaultValue, false);
-  assert.match(item.description, /phone location is sent to Nominatim or OSRM/);
+  assert.match(item.description, /Directions can start from a place you name/);
+  assert.match(item.description, /phone location is used/);
 });

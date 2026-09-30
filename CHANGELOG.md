@@ -2,6 +2,7 @@
 
 - Update the app name to AI Assistant.
 - Add a separately enabled OpenStreetMap tool for nearby places and OSRM driving directions, with distance-sorted results, business details, and turn-by-turn steps.
+- Let directions start from an explicit place or coordinate pair, falling back to phone GPS only when the user does not supply an origin.
 
 # 0.4.0
 

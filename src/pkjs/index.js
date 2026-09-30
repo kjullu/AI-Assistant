@@ -1183,7 +1183,7 @@ function buildSystemPrompt() {
     lines.push('Use Location for "where am I" requests.');
   }
   if (openStreetMapAvailable) {
-    lines.push('Use the OpenStreetMap tool to find stores, services, restaurants, or other places near the user, and to get driving directions. Opening hours may be missing or stale, so describe them as listed hours rather than guaranteed hours. For directions to a nearby result, pass its latitude and longitude back to the OpenStreetMap tool with action "directions".');
+    lines.push('Use the OpenStreetMap tool to find stores, services, restaurants, or other places near the user, and to get driving directions. Opening hours may be missing or stale, so describe them as listed hours rather than guaranteed hours. For directions to a nearby result, pass its latitude and longitude back to the OpenStreetMap tool with action "directions". Only set an origin when the user explicitly names or supplies one; otherwise omit all origin fields so the tool uses phone GPS. Never invent an origin.');
   }
 
   if (choiceAvailable) {
@@ -1252,7 +1252,10 @@ function buildToolDefinitions() {
       radiusMeters: { type: 'number', description: 'For nearby_places: search radius from 100 to 10000 meters. Defaults to 3000.' },
       destination: { type: 'string', description: 'For directions: destination name, address, or result label.' },
       destinationLatitude: { type: 'number', description: 'For directions: latitude from a nearby_places result.' },
-      destinationLongitude: { type: 'number', description: 'For directions: longitude from a nearby_places result.' }
+      destinationLongitude: { type: 'number', description: 'For directions: longitude from a nearby_places result.' },
+      origin: { type: 'string', description: 'For directions only: an explicit starting place or address named by the user. Omit to use phone GPS.' },
+      originLatitude: { type: 'number', description: 'For directions only: explicit starting latitude supplied by the user.' },
+      originLongitude: { type: 'number', description: 'For directions only: explicit starting longitude supplied by the user.' }
     }, ['action']));
   }
   if (getBoolSetting('EnableChoice', true)) {
@@ -2007,7 +2010,7 @@ function routeStepText(step) {
   return instruction;
 }
 
-function formatDirections(destination, json) {
+function formatDirections(destination, originLabel, json) {
   if (!json || json.code !== 'Ok' || !json.routes || !json.routes.length) {
     return null;
   }
@@ -2015,6 +2018,7 @@ function formatDirections(destination, json) {
   var steps = route.legs && route.legs[0] && route.legs[0].steps || [];
   var lines = ['Driving directions to ' + destination + ': ' + routeDistanceText(route.distance) +
     ', about ' + Math.max(1, Math.round(route.duration / 60)) + ' min.'];
+  lines.push('Starting point: ' + originLabel + '.');
   steps.slice(0, MAX_ROUTE_STEPS).forEach(function(step, index) {
     lines.push((index + 1) + '. ' + routeStepText(step));
   });
@@ -2023,7 +2027,7 @@ function formatDirections(destination, json) {
   return lines.join('\n');
 }
 
-function requestDrivingRoute(startLat, startLon, destination, endLat, endLon, generation, callback) {
+function requestDrivingRoute(startLat, startLon, originLabel, destination, endLat, endLon, generation, callback) {
   var request = new XMLHttpRequest();
   trackRequest(request, generation);
   var coordinates = startLon + ',' + startLat + ';' + endLon + ',' + endLat;
@@ -2039,7 +2043,7 @@ function requestDrivingRoute(startLat, startLon, destination, endLat, endLon, ge
       return;
     }
     try {
-      var result = formatDirections(destination, JSON.parse(request.responseText));
+      var result = formatDirections(destination, originLabel, JSON.parse(request.responseText));
       callback(result, result ? null : 'No driving route found to ' + destination + '.');
     } catch (err) {
       callback(null, 'The directions service returned an unreadable response.');
@@ -2061,23 +2065,26 @@ function runDirectionsTool(args, generation, callback) {
     callback(null, 'OpenStreetMap access disabled. Enable OpenStreetMap to request directions.');
     return;
   }
+  args = args || {};
   var destination = String(args && args.destination || '').replace(/^\s+|\s+$/g, '');
   if (!destination) {
     callback(null, 'No directions destination provided.');
     return;
   }
-  if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
-    callback(null, 'Location unavailable on this phone.');
+  var origin = String(args.origin || '').replace(/^\s+|\s+$/g, '');
+  var hasOriginLat = args.originLatitude !== undefined && args.originLatitude !== null && args.originLatitude !== '';
+  var hasOriginLon = args.originLongitude !== undefined && args.originLongitude !== null && args.originLongitude !== '';
+  if (hasOriginLat !== hasOriginLon) {
+    callback(null, 'Directions origin coordinates require both latitude and longitude.');
     return;
   }
-  navigator.geolocation.getCurrentPosition(function(pos) {
+
+  function continueFromOrigin(startLat, startLon, originLabel) {
     if (generation !== requestGeneration) return;
-    var startLat = Number(pos.coords.latitude);
-    var startLon = Number(pos.coords.longitude);
     var endLat = Number(args.destinationLatitude);
     var endLon = Number(args.destinationLongitude);
     if (isFinite(endLat) && isFinite(endLon) && Math.abs(endLat) <= 90 && Math.abs(endLon) <= 180) {
-      requestDrivingRoute(startLat, startLon, destination, endLat, endLon, generation, callback);
+      requestDrivingRoute(startLat, startLon, originLabel, destination, endLat, endLon, generation, callback);
       return;
     }
 
@@ -2108,7 +2115,7 @@ function runDirectionsTool(args, generation, callback) {
           callback(null, 'Could not find ' + destination + ' within 10 km.');
           return;
         }
-        requestDrivingRoute(startLat, startLon, destination, Number(matches[0].lat), Number(matches[0].lon), generation, callback);
+        requestDrivingRoute(startLat, startLon, originLabel, destination, Number(matches[0].lat), Number(matches[0].lon), generation, callback);
       } catch (err) {
         callback(null, 'OpenStreetMap returned an unreadable destination response.');
       }
@@ -2122,6 +2129,62 @@ function runDirectionsTool(args, generation, callback) {
       if (requestIsCurrent(search)) callback(null, 'Destination search timed out.');
     };
     search.send();
+  }
+
+  if (hasOriginLat && hasOriginLon) {
+    var explicitLat = Number(args.originLatitude);
+    var explicitLon = Number(args.originLongitude);
+    if (!isFinite(explicitLat) || !isFinite(explicitLon) || Math.abs(explicitLat) > 90 || Math.abs(explicitLon) > 180) {
+      callback(null, 'Directions origin coordinates are invalid.');
+      return;
+    }
+    continueFromOrigin(explicitLat, explicitLon, origin || 'specified coordinates');
+    return;
+  }
+
+  if (origin) {
+    var originSearch = new XMLHttpRequest();
+    trackRequest(originSearch, generation);
+    originSearch.open('GET', NOMINATIM_SEARCH_URL + '?format=jsonv2&limit=1&q=' + encodeURIComponent(origin), true);
+    originSearch.setRequestHeader('Accept', 'application/json');
+    originSearch.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+    originSearch.timeout = 15000;
+    originSearch.onload = function() {
+      untrackRequest(originSearch);
+      if (!requestIsCurrent(originSearch)) return;
+      if (originSearch.status < 200 || originSearch.status >= 300) {
+        callback(null, 'Could not locate the directions origin (' + originSearch.status + ').');
+        return;
+      }
+      try {
+        var originMatches = JSON.parse(originSearch.responseText);
+        if (!originMatches.length) {
+          callback(null, 'Could not find the starting point ' + origin + '.');
+          return;
+        }
+        continueFromOrigin(Number(originMatches[0].lat), Number(originMatches[0].lon), origin);
+      } catch (err) {
+        callback(null, 'OpenStreetMap returned an unreadable origin response.');
+      }
+    };
+    originSearch.onerror = function() {
+      untrackRequest(originSearch);
+      if (requestIsCurrent(originSearch)) callback(null, 'Unable to reach OpenStreetMap for the origin search.');
+    };
+    originSearch.ontimeout = function() {
+      untrackRequest(originSearch);
+      if (requestIsCurrent(originSearch)) callback(null, 'Origin search timed out.');
+    };
+    originSearch.send();
+    return;
+  }
+
+  if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
+    callback(null, 'Location unavailable on this phone.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(function(pos) {
+    continueFromOrigin(Number(pos.coords.latitude), Number(pos.coords.longitude), 'phone GPS');
   }, function(err) {
     if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
   }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
