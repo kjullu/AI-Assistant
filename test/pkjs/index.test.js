@@ -636,6 +636,63 @@ test('Health instructions are included only when enabled', () => {
   assert.equal(createRuntime({ EnableHealth: '1' }).context.buildToolDefinitions().some(tool => tool.function.name === 'health'), true);
 });
 
+test('Calendar instructions and tool are included only when enabled', () => {
+  assert.equal(createRuntime().context.buildToolDefinitions().some(tool => tool.function.name === 'calendar'), false);
+  const runtime = createRuntime({ EnableCalendar: '1' });
+  assert.match(runtime.context.buildSystemPrompt(), /Calendar access is read-only/);
+  assert.equal(runtime.context.buildToolDefinitions().some(tool => tool.function.name === 'calendar'), true);
+});
+
+test('Calendar tool returns upcoming phone events and unsubscribes', () => {
+  const runtime = createRuntime({ EnableCalendar: '1' });
+  let subscriptionConfig;
+  let unsubscribed = false;
+  runtime.context.Pebble.subscribeToSource = config => {
+    subscriptionConfig = config;
+    return { unsubscribe() { unsubscribed = true; } };
+  };
+
+  prompt(runtime, 'What is on my calendar?', 14);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'calendar', arguments: {} }],
+    reply: ''
+  });
+
+  assert.equal(subscriptionConfig.category, 'calendar');
+  assert.equal(subscriptionConfig.item, 'event');
+  subscriptionConfig.onData({
+    instances: [{
+      instanceId: '0',
+      properties: {
+        name: { longText: { text: 'Dentist appointment' } },
+        location: { longText: { text: 'Main Street 1' } },
+        starts_at: { timestamp: { value: 1780311600 } },
+        ends_at: { timestamp: { value: 1780315200 } },
+        all_day: { boolean: { value: false } },
+        calendar: { shortText: { text: 'Personal' } }
+      }
+    }]
+  });
+
+  assert.equal(unsubscribed, true);
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  const toolResult = followup.messages.at(-1);
+  assert.equal(toolResult.role, 'tool');
+  assert.match(toolResult.content, /Dentist appointment/);
+  assert.match(toolResult.content, /Main Street 1/);
+  assert.match(toolResult.content, /2026-06-01T11:00:00\.000Z/);
+  assert.match(toolResult.content, /Read-only result/);
+});
+
+test('Calendar tool explains when the companion plugin API is unavailable', () => {
+  const runtime = createRuntime({ EnableCalendar: '1' });
+  let error = '';
+  runtime.context.executeCalendarTool(runtime.context.requestGeneration, (result, message) => {
+    error = message;
+  });
+  assert.match(error, /Pebble mobile app 1\.14\.0/);
+});
+
 test('stream fallback can continue into a tool round', () => {
   const runtime = createRuntime();
   prompt(runtime);

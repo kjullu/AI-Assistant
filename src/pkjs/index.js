@@ -68,6 +68,7 @@ var pendingHealthGeneration = 0;
 var pendingHealthRequestId = 0;
 var pendingHealthCallback = null;
 var pendingHealthTimer = null;
+var activeCalendarSubscriptions = [];
 
 function debugLog(message) {
   var line = new Date().toISOString() + ' ' + message;
@@ -123,6 +124,29 @@ function clearPendingHealth() {
   pendingHealthTimer = null;
 }
 
+function trackCalendarSubscription(subscription) {
+  activeCalendarSubscriptions.push(subscription);
+}
+
+function untrackCalendarSubscription(subscription) {
+  var index = activeCalendarSubscriptions.indexOf(subscription);
+  if (index !== -1) {
+    activeCalendarSubscriptions.splice(index, 1);
+  }
+}
+
+function cancelCalendarSubscriptions() {
+  var subscriptions = activeCalendarSubscriptions.slice();
+  activeCalendarSubscriptions = [];
+  for (var i = 0; i < subscriptions.length; i++) {
+    try {
+      subscriptions[i].unsubscribe();
+    } catch (err) {
+      debugLog('Calendar unsubscribe failed: ' + err.message);
+    }
+  }
+}
+
 function cancelActiveRequests(notify, requestId) {
   debugLog('cancelActiveRequests active=' + activeRequests.length + ' generation=' + requestGeneration);
   requestGeneration++;
@@ -137,6 +161,7 @@ function cancelActiveRequests(notify, requestId) {
   activeRequests = [];
   clearPendingChoice();
   clearPendingHealth();
+  cancelCalendarSubscriptions();
   sendQueue = sendQueue.filter(function(item) {
     return !item.requestId || item.requestId !== requestId;
   });
@@ -749,6 +774,7 @@ function sendToolStatesToWatch() {
       ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0') +
       ';choice=' + (getBoolSetting('EnableChoice', true) ? '1' : '0') +
       ';timeline=' + (getBoolSetting('EnableTimeline', true) ? '1' : '0') +
+      ';calendar=' + (getBoolSetting('EnableCalendar', false) ? '1' : '0') +
       ';health=' + (getBoolSetting('EnableHealth', false) ? '1' : '0')
   });
 }
@@ -1070,6 +1096,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableScrape = settingValue(convertedSettings, rawSettings, 'EnableScrape', messageKeys.EnableScrape);
   var enableChoice = settingValue(convertedSettings, rawSettings, 'EnableChoice', messageKeys.EnableChoice);
   var enableTimeline = settingValue(convertedSettings, rawSettings, 'EnableTimeline', messageKeys.EnableTimeline);
+  var enableCalendar = settingValue(convertedSettings, rawSettings, 'EnableCalendar', messageKeys.EnableCalendar);
   var enableHealth = settingValue(convertedSettings, rawSettings, 'EnableHealth', messageKeys.EnableHealth);
   var reasoningEffort = settingValue(convertedSettings, rawSettings, 'ReasoningEffort', messageKeys.ReasoningEffort);
   var openRouterProvider = settingValue(convertedSettings, rawSettings, 'OpenRouterProvider', messageKeys.OpenRouterProvider);
@@ -1113,6 +1140,9 @@ function saveSettings(convertedSettings, rawSettings) {
   if (enableTimeline !== undefined) {
     localStorage.setItem('EnableTimeline', String(enableTimeline ? 1 : 0));
   }
+  if (enableCalendar !== undefined) {
+    localStorage.setItem('EnableCalendar', String(enableCalendar ? 1 : 0));
+  }
   if (enableHealth !== undefined) {
     localStorage.setItem('EnableHealth', String(enableHealth ? 1 : 0));
   }
@@ -1152,6 +1182,7 @@ function buildSystemPrompt() {
   var locationAvailable = getBoolSetting('EnableLocation', false);
   var choiceAvailable = getBoolSetting('EnableChoice', true);
   var timelineAvailable = getBoolSetting('EnableTimeline', true);
+  var calendarAvailable = getBoolSetting('EnableCalendar', false);
   var healthAvailable = getBoolSetting('EnableHealth', false);
 
   var lines = [
@@ -1179,6 +1210,10 @@ function buildSystemPrompt() {
 
   if (timelineAvailable) {
     lines.push('Use Timeline only when the user asks to add or schedule something. Clarify ambiguous times first.');
+  }
+
+  if (calendarAvailable) {
+    lines.push('Use Calendar when the user asks about their upcoming appointments, events, or schedule. It returns at most ten events from the next seven days. Calendar access is read-only, so never claim to add, edit, or delete a phone calendar event.');
   }
 
   if (healthAvailable) {
@@ -1243,6 +1278,9 @@ function buildToolDefinitions() {
       title: { type: 'string' }, time: { type: 'string', description: 'ISO-8601 UTC date-time.' },
       body: { type: 'string' }, durationMinutes: { type: 'number' }, reminderMinutes: { type: 'number' }
     }, ['title', 'time']));
+  }
+  if (getBoolSetting('EnableCalendar', false)) {
+    tools.push(functionTool('calendar', 'Read up to ten upcoming phone calendar events from the next seven days. This tool is read-only.', {}, []));
   }
   if (getBoolSetting('EnableHealth', false)) {
     tools.push(functionTool('health', 'Read watch-recorded Health data for an inclusive local date range.', {
@@ -2459,6 +2497,108 @@ function executeHealthTool(args, generation, requestId, callback) {
   sendToWatch({ Status: 'Reading health...', HealthRequest: from + '|' + to }, requestId);
 }
 
+function calendarTextProperty(properties, name) {
+  var shapes = properties && properties[name];
+  if (!shapes) return '';
+  if (shapes.longText && shapes.longText.text !== undefined) return String(shapes.longText.text);
+  if (shapes.shortText && shapes.shortText.text !== undefined) return String(shapes.shortText.text);
+  return '';
+}
+
+function calendarTimestampProperty(properties, name) {
+  var timestamp = properties && properties[name] && properties[name].timestamp;
+  var seconds = timestamp && Number(timestamp.value);
+  if (!isFinite(seconds)) return '';
+  return new Date(seconds * 1000).toISOString();
+}
+
+function formatCalendarEnvelope(envelope) {
+  var instances = envelope && Array.isArray(envelope.instances) ? envelope.instances : [];
+  if (instances.length === 0) {
+    return 'No upcoming phone calendar events were returned for the next seven days. The calendar may be empty, disabled in the Pebble app, or unavailable to the phone app.';
+  }
+
+  var events = instances.map(function(instance) {
+    var properties = instance.properties || {};
+    var event = {
+      title: calendarTextProperty(properties, 'name'),
+      start: calendarTimestampProperty(properties, 'starts_at'),
+      end: calendarTimestampProperty(properties, 'ends_at'),
+      allDay: !!(properties.all_day && properties.all_day.boolean && properties.all_day.boolean.value),
+      calendar: calendarTextProperty(properties, 'calendar')
+    };
+    var location = calendarTextProperty(properties, 'location');
+    if (location) event.location = location;
+    return event;
+  });
+
+  return 'Upcoming phone calendar events from the next seven days. Read-only result:\n' + JSON.stringify(events);
+}
+
+function executeCalendarTool(generation, callback) {
+  if (!getBoolSetting('EnableCalendar', false)) {
+    callback(null, 'Calendar access disabled.');
+    return;
+  }
+  if (!Pebble.subscribeToSource) {
+    callback(null, 'Calendar requires Pebble mobile app 1.14.0 or newer with experimental plugins enabled.');
+    return;
+  }
+
+  var subscription = null;
+  var settled = false;
+  var timer = null;
+
+  function cleanup() {
+    if (!subscription) return;
+    untrackCalendarSubscription(subscription);
+    try {
+      subscription.unsubscribe();
+    } catch (err) {
+      debugLog('Calendar unsubscribe failed: ' + err.message);
+    }
+    subscription = null;
+  }
+
+  function finish(result, error) {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    cleanup();
+    if (generation === requestGeneration) {
+      callback(result, error);
+    }
+  }
+
+  timer = setTimeout(function() {
+    finish(null, 'Calendar request timed out. Check that experimental plugins are enabled in the Pebble mobile app.');
+  }, 15000);
+
+  try {
+    var created = Pebble.subscribeToSource({
+      category: 'calendar',
+      item: 'event',
+      properties: ['name', 'location', 'starts_at', 'ends_at', 'all_day', 'calendar'],
+      onData: function(envelope) {
+        finish(formatCalendarEnvelope(envelope), null);
+      },
+      onError: function(error) {
+        var code = error && error.code ? String(error.code) : 'UNKNOWN';
+        var message = error && error.message ? ': ' + String(error.message) : '';
+        finish(null, 'Calendar unavailable (' + code + message + ').');
+      }
+    });
+    subscription = created;
+    if (settled) {
+      cleanup();
+    } else {
+      trackCalendarSubscription(subscription);
+    }
+  } catch (err) {
+    finish(null, 'Calendar unavailable: ' + err.message);
+  }
+}
+
 function executeNamedTool(call, generation, requestId, executionId, callback) {
   var name = call.name;
   var args = call.arguments;
@@ -2485,6 +2625,8 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
     executeChoiceTool(args, generation, requestId, callback);
   } else if (name === 'health') {
     executeHealthTool(args, generation, requestId, callback);
+  } else if (name === 'calendar') {
+    executeCalendarTool(generation, callback);
   } else if (name === 'memory') {
     if (!getBoolSetting('EnableMemory', true)) {
       callback(null, 'Memory disabled.');
@@ -2514,6 +2656,7 @@ function toolActivityLabel(call) {
     calculator: 'Calculator',
     choice: 'Choice',
     health: 'Health',
+    calendar: 'Calendar',
     memory: 'Memory',
     timeline: 'Timeline'
   };
@@ -2913,6 +3056,14 @@ Pebble.addEventListener('appmessage', function(e) {
     return;
   }
 
+  if (e.payload && e.payload.ToggleCalendar) {
+    var calendarEnabled = toggleBoolSetting('EnableCalendar', false);
+    sendToWatch({ Status: calendarEnabled ? 'Calendar on' : 'Calendar off' });
+    sendToolStatesToWatch();
+    sendStatsToWatch();
+    return;
+  }
+
   if (e.payload && e.payload.ToggleHealth) {
     var healthEnabled = toggleBoolSetting('EnableHealth', false);
     sendToWatch({ Status: healthEnabled ? 'Health on' : 'Health off' });
@@ -3008,6 +3159,7 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     EnableWeather: getBoolSetting('EnableWeather', true),
     EnableChoice: getBoolSetting('EnableChoice', true),
     EnableTimeline: getBoolSetting('EnableTimeline', true),
+    EnableCalendar: getBoolSetting('EnableCalendar', false),
     EnableHealth: getBoolSetting('EnableHealth', false),
     ResetFirstRunNotice: false,
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),

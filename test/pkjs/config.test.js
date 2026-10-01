@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const config = require('../../src/pkjs/config');
+const packageJson = require('../../package.json');
 const textarea = require('../../src/pkjs/textarea');
 
 function findByMessageKey(items, messageKey) {
@@ -36,4 +37,12 @@ test('memory toggle and notes are adjacent in phone settings', () => {
   const keys = section.items.map((item) => item.messageKey).filter(Boolean);
 
   assert.deepEqual(keys.slice(0, 2), ['EnableMemory', 'NotesMemoryText']);
+});
+
+test('calendar access is explicit and disabled by default', () => {
+  const item = findByMessageKey(config, 'EnableCalendar');
+  assert.ok(item);
+  assert.equal(item.defaultValue, false);
+  assert.match(item.description, /sent to OpenRouter/);
+  assert.deepEqual(packageJson.pebble.usesPermissions, ['Calendar']);
 });
