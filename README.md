@@ -39,7 +39,7 @@ Store pages: [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b6000
 - `SELECT`: enable or disable the selected tool.
 - `BACK`: return to the previous screen.
 
-The watch can toggle Location, Memory, Calculator, Search, Weather, Choice, Timeline, and Health. Firecrawl Scrape can only be configured from the phone settings.
+The watch can toggle Location, Memory, Calculator, Search, Weather, Choice, Timeline, Calendar, and Health. Firecrawl Scrape can only be configured from the phone settings.
 
 ### Saved Conversations
 
@@ -98,6 +98,7 @@ Reopen settings after changing the model to refresh its providers and reasoning 
 - `Weather`: enabled by default. Supports current and forecast weather for a requested place. Current-location weather uses phone coordinates when Location is enabled.
 - `Choice`: enabled by default. Lets the model present selectable answers on the watch.
 - `Timeline`: enabled by default. Lets the model add a pin when the user asks to schedule something.
+- `Calendar`: disabled by default. Lets the model read up to ten upcoming events from the next seven days of calendars enabled in the Pebble phone app. It cannot add, edit, or delete phone calendar events. This experimental tool requires Pebble mobile app 1.14.0 or newer with experimental plugins enabled under Settings → Debug.
 - `Health`: disabled by default. Lets the model request supported watch-recorded Health data for an inclusive date range.
 
 The phone settings also provide an extra system prompt, editable memory notes, editable saved conversations, monthly statistics, and a sanitized debug log.
@@ -114,11 +115,12 @@ Enabled tools may send data to other services:
 - `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts. Current-location requests send the phone coordinates directly to Open-Meteo when Location is enabled.
 - `Calculator`: arithmetic and physical-unit conversions run locally. Currency codes are sent to Frankfurter for current reference rates; amounts are converted locally.
 - `Timeline`: pin content is sent to Pebble's timeline API using the current user's timeline token.
+- `Calendar`: upcoming event titles, times, calendar names, and available locations are read from the phone through Pebble's experimental calendar plugin and returned to the selected model through OpenRouter. Calendar access is disabled by default.
 - `Health`: requested steps, active time, distance, sleep, calories, and supported heart-rate aggregates are read from Pebble Health and returned to the selected model through OpenRouter. Ranges that include today also include available current heart rate and activity data. Availability depends on the watch and requested date range.
 
 Choice prompts and memory changes are handled by the watch and phone app, but their results become part of the conversation sent to OpenRouter.
 
-API keys, memory notes, saved conversations, statistics, settings, cached currency rates, cached model capabilities, and sanitized debug metadata are stored in the Pebble phone app's local storage. Saved conversations contain conversation text and can be viewed or edited in phone settings. Health access is disabled by default, and Health responses are informational rather than medical advice.
+API keys, memory notes, saved conversations, statistics, settings, cached currency rates, cached model capabilities, and sanitized debug metadata are stored in the Pebble phone app's local storage. Saved conversations contain conversation text and can be viewed or edited in phone settings. Calendar and Health access are disabled by default, and Health responses are informational rather than medical advice.
 
 ## Build And Test
 

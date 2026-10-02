@@ -92,6 +92,7 @@ static bool s_search_enabled;
 static bool s_weather_enabled = true;
 static bool s_choice_enabled = true;
 static bool s_timeline_enabled = true;
+static bool s_calendar_enabled;
 static bool s_health_enabled;
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 static int16_t s_touch_last_y;
@@ -621,7 +622,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 8;
+  return 9;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -653,6 +654,10 @@ static void get_settings_row(int8_t index, SettingRow *out) {
     case 6:
       out->label = "Timeline";
       out->enabled = s_timeline_enabled;
+      break;
+    case 7:
+      out->label = "Calendar";
+      out->enabled = s_calendar_enabled;
       break;
     default:
       out->label = "Health";
@@ -1713,6 +1718,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
                                strcmp(status, "Weather on") == 0 || strcmp(status, "Weather off") == 0 ||
                                strcmp(status, "Choice on") == 0 || strcmp(status, "Choice off") == 0 ||
                                strcmp(status, "Timeline on") == 0 || strcmp(status, "Timeline off") == 0 ||
+                               strcmp(status, "Calendar on") == 0 || strcmp(status, "Calendar off") == 0 ||
                                strcmp(status, "Health on") == 0 || strcmp(status, "Health off") == 0)) {
     vibes_short_pulse();
     status = "Ready";
@@ -1753,6 +1759,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_weather_enabled = strstr(states, "weather=1") != NULL;
     s_choice_enabled = strstr(states, "choice=1") != NULL;
     s_timeline_enabled = strstr(states, "timeline=1") != NULL;
+    s_calendar_enabled = strstr(states, "calendar=1") != NULL;
     s_health_enabled = strstr(states, "health=1") != NULL;
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
@@ -2054,6 +2061,9 @@ static void toggle_selected_setting(void) {
       send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
       break;
     case 7:
+      send_simple_command(MESSAGE_KEY_ToggleCalendar, "Toggle failed");
+      break;
+    case 8:
       send_simple_command(MESSAGE_KEY_ToggleHealth, "Toggle failed");
       break;
   }

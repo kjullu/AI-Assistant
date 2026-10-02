@@ -126,6 +126,13 @@ module.exports = [
       },
       {
         "type": "toggle",
+        "messageKey": "EnableCalendar",
+        "label": "Give AI Calendar Events",
+        "description": "Experimental. Allows upcoming phone calendar event details to be sent to OpenRouter when the AI requests them. Requires Pebble mobile app 1.14.0 or newer with experimental plugins enabled.",
+        "defaultValue": false
+      },
+      {
+        "type": "toggle",
         "messageKey": "EnableHealth",
         "label": "Give AI Health Data",
         "description": "Allows the AI to request Health data stored on the watch.",

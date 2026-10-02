@@ -1,3 +1,8 @@
+# 0.4.2
+
+- Add an opt-in, read-only Calendar tool using Pebble mobile app 1.14.0's experimental plugin API.
+- Return up to ten upcoming phone calendar events from the next seven days to the selected model.
+
 # 0.4.1
 
 - Update the app name to AI Assistant.
