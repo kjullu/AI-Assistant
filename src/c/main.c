@@ -14,6 +14,8 @@
 #define DIVIDER_GAP 6
 #define SETTINGS_SCROLL_MARGIN 10
 #define HOME_STATS_GAP 5
+#define HOME_TITLE "AI Assistant"
+#define HOME_HINT "SELECT speak  UP tools\nDOWN sessions"
 
 #ifdef PBL_COLOR
 #define ACCENT_AI     GColorCobaltBlue
@@ -293,6 +295,13 @@ static void markdown_draw_piece(MarkdownLayout *layout, const char *piece, GFont
   if (layout->x != layout->left && layout->x + piece_width > layout->right) {
     markdown_next_line(layout);
   }
+  // Smaller inline-code text is pushed down so it shares the body text baseline.
+  int16_t baseline_offset = 0;
+  int16_t body_height = font_line_height(layout->body_font);
+  if (piece_height < body_height) {
+    baseline_offset = body_height - piece_height;
+    piece_height = body_height;
+  }
   if (piece_height > layout->line_height) {
     layout->line_height = piece_height;
   }
@@ -303,7 +312,8 @@ static void markdown_draw_piece(MarkdownLayout *layout, const char *piece, GFont
       draw_width = layout->right - layout->x;
     }
     graphics_draw_text(layout->ctx, piece, font,
-                       GRect(layout->x, layout->y, draw_width, piece_height + 2),
+                       GRect(layout->x, layout->y + baseline_offset, draw_width,
+                             piece_height - baseline_offset + 2),
                        GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
   }
   layout->x += piece_width;
@@ -829,6 +839,11 @@ static void open_choice_screen(const char *question, const char *options_text) {
   update_display("Choose");
 }
 
+static int16_t choice_option_height(const char *option, GFont font, int16_t width) {
+  int16_t height = measure_text_height(option, font, width - (PADDING * 4)) + (PADDING * 2);
+  return height < ROW_HEIGHT ? ROW_HEIGHT : height;
+}
+
 static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
@@ -858,10 +873,7 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   // Options
   for (int i = 0; i < s_choice_option_count; i++) {
     bool selected = (i == s_choice_selection);
-    int16_t opt_h = measure_text_height(s_choice_options[i], option_font, width - (PADDING * 4));
-    if (opt_h < ROW_HEIGHT) {
-      opt_h = ROW_HEIGHT;
-    }
+    int16_t opt_h = choice_option_height(s_choice_options[i], option_font, width);
 
     if (draw) {
       if (selected) {
@@ -907,10 +919,7 @@ static void scroll_choice_selection_into_view(void) {
   int16_t row_top = PADDING + question_h + (PADDING * 2) + DIVIDER_GAP;
   int16_t row_bottom = row_top;
   for (int i = 0; i <= s_choice_selection && i < s_choice_option_count; i++) {
-    int16_t option_h = measure_text_height(s_choice_options[i], option_font, width - (PADDING * 4));
-    if (option_h < ROW_HEIGHT) {
-      option_h = ROW_HEIGHT;
-    }
+    int16_t option_h = choice_option_height(s_choice_options[i], option_font, width);
     row_bottom = row_top + option_h;
     if (i < s_choice_selection) {
       row_top = row_bottom;
@@ -1069,8 +1078,8 @@ static void home_layer_update_proc(Layer *layer, GContext *ctx) {
   GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
 
   graphics_context_set_text_color(ctx, ACCENT_AI);
-  int16_t title_h = measure_text_height("Pebble AI", title_font, text_width);
-  graphics_draw_text(ctx, "Pebble AI", title_font, GRect(PADDING, y, text_width, title_h + 2),
+  int16_t title_h = measure_text_height(HOME_TITLE, title_font, text_width);
+  graphics_draw_text(ctx, HOME_TITLE, title_font, GRect(PADDING, y, text_width, title_h + 2),
                      GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
   y += title_h + 3;
 
@@ -1082,11 +1091,11 @@ static void home_layer_update_proc(Layer *layer, GContext *ctx) {
   graphics_draw_text(ctx, stats, stats_font, GRect(PADDING, y, text_width, bounds.size.h - y),
                      GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 
-  int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions", hint_font, text_width);
+  int16_t hint_h = measure_text_height(HOME_HINT, hint_font, text_width);
   int16_t hint_y = bounds.size.h - hint_h - PADDING;
   if (hint_y > y) {
     graphics_context_set_text_color(ctx, COLOR_DIM);
-    graphics_draw_text(ctx, "SELECT speak  UP tools  DOWN sessions", hint_font,
+    graphics_draw_text(ctx, HOME_HINT, hint_font,
                        GRect(PADDING, hint_y, text_width, hint_h + 2),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
   }
@@ -1116,13 +1125,11 @@ static void new_session_layer_update_proc(Layer *layer, GContext *ctx) {
   int16_t y = header_h + (hint_y - header_h - group_h) / 2;
   for (int i = 0; i < 2; i++) {
     bool selected = i == s_new_session_selection;
-    GColor fill = i == 0 ? GColorLightGray : GColorMediumAquamarine;
-    GColor text = i == 0 ? GColorDarkGray : ACCENT_AI;
     if (selected) {
-      graphics_context_set_fill_color(ctx, fill);
+      graphics_context_set_fill_color(ctx, ACCENT_SELECT);
       graphics_fill_rect(ctx, GRect(0, y, width, ROW_HEIGHT), 0, GCornerNone);
     }
-    graphics_context_set_text_color(ctx, text);
+    graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorBlack);
     graphics_draw_text(ctx, options[i], option_font,
                        GRect(PADDING, y + 3, width - (PADDING * 2), ROW_HEIGHT),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
@@ -1307,6 +1314,7 @@ static void layout_chat(bool scroll_to_bottom) {
   }
 
   int16_t content_height;
+  bool showing_home = false;
   if (s_show_new_session) {
     content_height = bounds.size.h;
     layer_set_frame(s_new_session_layer, GRect(0, 0, width, content_height));
@@ -1316,21 +1324,22 @@ static void layout_chat(bool scroll_to_bottom) {
   } else {
     int16_t text_width = width - (PADDING * 2);
     const char *stats = s_stats_text[0] ? s_stats_text : "Loading stats...";
-    int16_t title_h = measure_text_height("Pebble AI", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), text_width);
+    int16_t title_h = measure_text_height(HOME_TITLE, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), text_width);
     GSize stats_size = graphics_text_layout_get_content_size(stats,
                                                              fonts_get_system_font(FONT_KEY_GOTHIC_24),
                                                              GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT),
                                                              GTextOverflowModeWordWrap, GTextAlignmentLeft);
-    int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions",
+    int16_t hint_h = measure_text_height(HOME_HINT,
                                          fonts_get_system_font(FONT_KEY_GOTHIC_14), text_width);
     int16_t home_height = PADDING + (title_h + 3) + HOME_STATS_GAP + stats_size.h + PADDING + hint_h + PADDING;
     content_height = home_height > bounds.size.h ? home_height : bounds.size.h;
     layer_set_frame(s_home_layer, GRect(0, 0, width, content_height));
     layer_mark_dirty(s_home_layer);
+    showing_home = true;
   }
   scroll_layer_set_content_size(s_scroll_layer, GSize(width, content_height));
 
-  if (s_show_new_session) {
+  if (s_show_new_session || showing_home) {
     scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
   } else if (s_show_settings && content_height > bounds.size.h) {
     GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);

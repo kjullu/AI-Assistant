@@ -725,7 +725,7 @@ function formatCredits(value) {
 function buildStatsText() {
   var stats = getMonthlyStats();
   var model = getSetting('OpenRouterModel', DEFAULT_MODEL);
-  var remaining = stats.remainingCredits === null || stats.remainingCredits === undefined ? 'unavailable' : formatCredits(stats.remainingCredits);
+  var remaining = stats.remainingCredits === null || stats.remainingCredits === undefined ? 'n/a' : formatCredits(stats.remainingCredits);
   return [
     'Used: ' + formatCredits(stats.usageCredits),
     'Remaining: ' + remaining,
