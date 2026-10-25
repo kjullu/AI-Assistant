@@ -208,8 +208,8 @@ static void draw_toggle_switch(GContext *ctx, int16_t x, int16_t y, bool on, boo
       knob_fill = GColorWhite;
     } else {
       track_fill = GColorWhite;
-      track_stroke = COLOR_DIM;
-      knob_fill = COLOR_DIM;
+      track_stroke = PBL_IF_COLOR_ELSE(COLOR_DIM, GColorBlack);
+      knob_fill = PBL_IF_COLOR_ELSE(COLOR_DIM, GColorBlack);
     }
   }
 
@@ -514,6 +514,15 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
   int16_t width = bounds.size.w;
   int16_t y = 0;
   char *line = s_sessions_text;
+
+  if (draw) {
+    graphics_context_set_text_color(ctx, ACCENT_AI);
+    graphics_draw_text(ctx, "Sessions", header_font, GRect(PADDING, y, width - (PADDING * 2), LABEL_HEIGHT),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  y += LABEL_HEIGHT + 2;
+  draw_divider(ctx, PADDING, y, width - (PADDING * 2), COLOR_DIM, draw);
+  y += DIVIDER_GAP + PADDING;
   bool assistant_markdown = false;
   bool in_code_block = false;
 
@@ -844,31 +853,30 @@ static int16_t choice_option_height(const char *option, GFont font, int16_t widt
   return height < ROW_HEIGHT ? ROW_HEIGHT : height;
 }
 
+static const char *choice_question_text(void) {
+  return s_choice_question[0] ? s_choice_question : "Question";
+}
+
+static int16_t choice_question_height(int16_t width) {
+  int16_t question_h = measure_text_height(choice_question_text(),
+                                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                                           width - (PADDING * 2));
+  return question_h < 20 ? 20 : question_h;
+}
+
+// The question stays pinned at the top; options start below it and scroll underneath.
+static int16_t choice_header_height(int16_t width) {
+  return PADDING + choice_question_height(width) + (PADDING * 2) + DIVIDER_GAP;
+}
+
 static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
   int16_t width = bounds.size.w;
-  int16_t y = PADDING + s_choice_scroll_offset;
-
-  // Question header background
-  int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question", question_font, width - (PADDING * 2));
-  if (question_h < 20) {
-    question_h = 20;
-  }
-  if (draw) {
-    graphics_context_set_fill_color(ctx, ACCENT_AI);
-    graphics_fill_rect(ctx, GRect(0, y, width, question_h + PADDING * 2), 0, GCornerNone);
-    graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, s_choice_question[0] ? s_choice_question : "Question", question_font,
-                       GRect(PADDING, y + PADDING, width - (PADDING * 2), question_h + PADDING),
-                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
-  }
-  y += question_h + PADDING * 2;
-  if (draw) {
-    draw_divider(ctx, PADDING, y, width - (PADDING * 2), COLOR_DIM, true);
-  }
-  y += DIVIDER_GAP;
+  int16_t question_h = choice_question_height(width);
+  int16_t header_h = choice_header_height(width);
+  int16_t y = header_h + s_choice_scroll_offset;
 
   // Options
   for (int i = 0; i < s_choice_option_count; i++) {
@@ -897,6 +905,19 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   }
   y += 20 + PADDING * 2;
 
+  // Question header, drawn last so scrolled options pass underneath it.
+  if (draw) {
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_fill_rect(ctx, GRect(0, 0, width, header_h), 0, GCornerNone);
+    graphics_context_set_fill_color(ctx, ACCENT_AI);
+    graphics_fill_rect(ctx, GRect(0, PADDING, width, question_h + PADDING * 2), 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, choice_question_text(), question_font,
+                       GRect(PADDING, PADDING * 2, width - (PADDING * 2), question_h + PADDING),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    draw_divider(ctx, PADDING, PADDING + question_h + PADDING * 2, width - (PADDING * 2), COLOR_DIM, true);
+  }
+
   return y;
 }
 
@@ -907,16 +928,11 @@ static void scroll_choice_selection_into_view(void) {
   }
 
   GRect bounds = layer_get_bounds(s_choice_layer);
-  GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   int16_t width = bounds.size.w;
-  int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question",
-                                           question_font, width - (PADDING * 2));
-  if (question_h < 20) {
-    question_h = 20;
-  }
+  int16_t header_h = choice_header_height(width);
 
-  int16_t row_top = PADDING + question_h + (PADDING * 2) + DIVIDER_GAP;
+  int16_t row_top = header_h;
   int16_t row_bottom = row_top;
   for (int i = 0; i <= s_choice_selection && i < s_choice_option_count; i++) {
     int16_t option_h = choice_option_height(s_choice_options[i], option_font, width);
@@ -926,10 +942,10 @@ static void scroll_choice_selection_into_view(void) {
     }
   }
 
-  int16_t visible_top = -s_choice_scroll_offset + SETTINGS_SCROLL_MARGIN;
+  int16_t visible_top = -s_choice_scroll_offset + header_h + SETTINGS_SCROLL_MARGIN;
   int16_t visible_bottom = -s_choice_scroll_offset + bounds.size.h - SETTINGS_SCROLL_MARGIN;
   if (row_top < visible_top) {
-    s_choice_scroll_offset = SETTINGS_SCROLL_MARGIN - row_top;
+    s_choice_scroll_offset = header_h + SETTINGS_SCROLL_MARGIN - row_top;
   } else if (row_bottom > visible_bottom) {
     s_choice_scroll_offset = bounds.size.h - SETTINGS_SCROLL_MARGIN - row_bottom;
   }
