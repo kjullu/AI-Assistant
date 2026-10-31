@@ -716,7 +716,7 @@ function saveEditableStats(usedCredits, messages, searches) {
 
 function formatCredits(value) {
   value = Number(value || 0);
-  if (value < 0.01) {
+  if (value > 0 && value < 0.01) {
     return value.toFixed(4);
   }
   return value.toFixed(2);
@@ -725,7 +725,7 @@ function formatCredits(value) {
 function buildStatsText() {
   var stats = getMonthlyStats();
   var model = getSetting('OpenRouterModel', DEFAULT_MODEL);
-  var remaining = stats.remainingCredits === null || stats.remainingCredits === undefined ? 'unavailable' : formatCredits(stats.remainingCredits);
+  var remaining = stats.remainingCredits === null || stats.remainingCredits === undefined ? 'n/a' : formatCredits(stats.remainingCredits);
   return [
     'Used: ' + formatCredits(stats.usageCredits),
     'Remaining: ' + remaining,
