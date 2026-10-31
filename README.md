@@ -1,144 +1,85 @@
 # AI Assistant
 
-AI Assistant is a configurable watchapp for Pebble smartwatches that lets you dictate prompts and read streamed AI replies on your wrist. The phone-side PebbleKit JS app sends requests to a selected model through OpenRouter.
+Ask an AI model a question by speaking into your Pebble, then read the answer on your wrist as it streams in. The phone side of the app sends your prompt to a model of your choice through [OpenRouter](https://openrouter.ai).
 
-The app targets the `basalt`, `diorite`, and `emery` Pebble platforms.
+The model can also use tools: it can search the web, check the weather, do unit and currency conversions, add pins to your Pebble timeline, read your Health data, or ask you to pick between options on the watch. You choose which tools are turned on.
 
-Store pages: [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b60009445123) and [RePebble](https://apps.repebble.com/cf78a459465f436ab859ad27).
+![A conversation on a Pebble Time 2: the user says "Please say something smart." and the AI replies.](<images/store images/Emery - Pebble Time 2/pebble_screenshot2.png>)
 
-## What It Does
+Runs on Pebble Time, Pebble Time Steel, Pebble 2, and Pebble Time 2 (`basalt`, `diorite`, and `emery`).
 
-- Dictates prompts through Pebble's built-in voice input.
-- Streams compact assistant replies back to the watch.
-- Keeps recent turns as conversation context and stores up to 20 conversations locally on the phone.
-- Shows the five most recent saved conversations on the watch.
-- Lets the model use enabled tools repeatedly, with independent calls executed in parallel when possible.
-- Shows every tool call as a separate activity line in the watch conversation before the final response.
-- Renders light Markdown in assistant replies, including bold text, headings, lists, and inline or fenced code. Italic markers are removed because the built-in Pebble fonts do not include italics.
-- Can add requested reminders and events to the user's Pebble timeline when Timeline is enabled.
-- Shows the remaining OpenRouter credit balance plus monthly message and search counts on every home screen. Pebble Time 2 also shows used credits and the selected model. Monthly counters reset at the start of each UTC month; the remaining credit balance does not.
+> Most of the daily use testing in done on the Pebble Time 2 (`Emery`).
 
-## Watch Controls
+## Install
 
-### Home
+Install it from [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b60009445123) or [RePebble](https://apps.repebble.com/cf78a459465f436ab859ad27).
 
-- `SELECT`: start dictation.
-- `UP`: open tool settings.
-- `DOWN`: open saved conversations.
-- `BACK`: exit the app.
+You need an [OpenRouter API key](https://openrouter.ai/keys), which usually starts with `sk-or-v1-`. Open the app settings from the gear in the Pebble phone app and paste it in. The default model is `moonshotai/kimi-k2.5`; any OpenRouter model ID works. Brave Search and Firecrawl Scrape each need their own API key.
 
-### Conversation
+Then open the app on the watch and press `SELECT` to start talking. Launching it through Quick Launch starts dictation straight away.
 
-- `UP` / `DOWN`: scroll through the conversation.
-- `SELECT`: dictate another prompt.
-- `BACK`: cancel the active request, or return home when no request is active.
+## Controls
 
-### Tool Settings
+| Button | Home | Conversation |
+| --- | --- | --- |
+| `SELECT` | Dictate a prompt | Dictate a follow-up |
+| `UP` | Tool settings | Scroll up |
+| `DOWN` | Saved conversations | Scroll down |
+| `BACK` | Exit | Cancel the request, or go home |
 
-- `UP` / `DOWN`: move between tools.
-- `SELECT`: enable or disable the selected tool.
-- `BACK`: return to the previous screen.
+Hold `SELECT` to start a new conversation, hold `UP` for tool settings, and hold `DOWN` for saved conversations. When the model asks you to choose, use `UP`/`DOWN` and `SELECT`, or pick `Say your own` to dictate an answer. On Pebble Time 2 you can also swipe to scroll.
 
-The watch can toggle Location, Memory, Calculator, Search, Weather, Choice, Timeline, and Health. Firecrawl Scrape can only be configured from the phone settings.
+The home screen shows your remaining OpenRouter credit and how many messages and searches you have used this month.
 
-### Saved Conversations
+## Tools
 
-- `UP` / `DOWN`: scroll through saved conversations.
-- `BACK`: return to the previous screen.
+| Tool | Default | What it does |
+| --- | --- | --- |
+| Memory | On | Keeps notes the model can add to; you can edit them in settings |
+| Calculator | On | Arithmetic, unit conversion, and currency conversion |
+| Weather | On | Current weather and forecasts for a place |
+| Choice | On | Lets the model give you options to pick from on the watch |
+| Timeline | On | Adds reminders and events to your Pebble timeline |
+| Location | Off | Gives the model your phone's coordinates and a rough place name |
+| Health | Off | Reads steps, sleep, heart rate, and similar data from Pebble Health |
+| Brave Search | Off | Web search, needs a Brave Search API key |
+| Firecrawl Scrape | Off | Reads web pages, needs a Firecrawl API key; phone settings only |
 
-### Choice Prompts
+The phone settings also let you pick a provider and routing priority, set reasoning effort, add your own system prompt, and edit saved conversations. Reopen settings after changing the model so the provider and reasoning options refresh.
 
-- `UP` / `DOWN`: move between choices. The list scrolls to keep the selected option visible.
-- `SELECT`: submit the selected choice.
-- Select `Say your own`: dictate a custom answer.
-- `BACK`: cancel the choice prompt.
+## Privacy
 
-Submitted choice questions and answers are added to the watch conversation before the assistant continues.
+Your prompts, recent conversation, memory notes, extra system prompt, and tool results go to OpenRouter and the model you picked. Enabled tools also send data to other services:
 
-### Long Presses
+- Location: coordinates go to Nominatim to look up a place name.
+- Brave Search: search queries go to Brave.
+- Firecrawl Scrape: page URLs go to Firecrawl.
+- Weather: place names and coordinates go to Open-Meteo.
+- Calculator: currency codes go to Frankfurter. Everything else runs on the phone.
+- Timeline: pin content goes to Pebble's timeline API.
+- Health: the requested Health data goes to the model. It is information, not medical advice.
 
-These controls work outside choice prompts:
+API keys, memory notes, up to 20 saved conversations, statistics, and settings are stored locally in the Pebble phone app.
 
-- Hold `SELECT`: open the new-session confirmation screen.
-- Hold `UP`: open tool settings.
-- Hold `DOWN`: open saved conversations.
+## Build and test
 
-### New Session Confirmation
-
-- `UP`: highlight `Back`.
-- `DOWN`: highlight `Start new`, which is selected by default and starts dictation after clearing the conversation.
-- `SELECT`: activate the highlighted option.
-- `BACK`: close the confirmation and return to the existing conversation without clearing it.
-
-On supported touchscreen models, swipe vertically to scroll long conversation and saved-conversation screens. There is no touchscreen hold action.
-
-Launching the app through Pebble Quick Launch starts dictation immediately.
-
-## Configuration
-
-Open the app settings from the gear in the Pebble phone app.
-
-### OpenRouter
-
-- `OpenRouter API Key`: required for assistant requests, usually beginning with `sk-or-v1-`.
-- `Model`: accepts an OpenRouter model ID and defaults to `moonshotai/kimi-k2.5`.
-- `Provider`: lists the provider endpoints available for the saved model. Automatic routing lets OpenRouter choose, while selecting an endpoint restricts requests to it.
-- `Routing priority`: lets OpenRouter use its automatic routing or order provider endpoints by lowest price, highest generation throughput, or lowest response latency.
-- `Reasoning`: shows the model default and the controls advertised by OpenRouter for the saved model. Depending on the model, this may include disabled, provider-default enabled, or specific effort levels. Reasoning output is excluded from replies shown on the watch.
-
-Reopen settings after changing the model to refresh its providers and reasoning capabilities.
-
-### Tools
-
-- `Location`: disabled by default. Lets the model request the phone's current coordinates and an approximate place name.
-- `Memory`: enabled by default. Lets the model add or replace persistent notes, which can also be edited in phone settings.
-- `Calculator`: enabled by default. Supports arithmetic, compatible physical-unit conversions, and current currency conversion.
-- `Brave Search`: disabled by default and requires a separate Brave Search API key.
-- `Firecrawl Scrape`: disabled by default and requires a separate Firecrawl API key.
-- `Weather`: enabled by default. Supports current and forecast weather for a requested place. Current-location weather uses phone coordinates when Location is enabled.
-- `Choice`: enabled by default. Lets the model present selectable answers on the watch.
-- `Timeline`: enabled by default. Lets the model add a pin when the user asks to schedule something.
-- `Health`: disabled by default. Lets the model request supported watch-recorded Health data for an inclusive date range.
-
-The phone settings also provide an extra system prompt, editable memory notes, editable saved conversations, monthly statistics, and a sanitized debug log.
-
-## Privacy And Data
-
-Dictated prompts, recent conversation context, enabled memory notes, extra system instructions, and tool results are sent to OpenRouter and the selected model. OpenRouter is also queried for model capabilities and, when an API key is configured, credit information.
-
-Enabled tools may send data to other services:
-
-- `Location`: the phone obtains its coordinates and sends them to Nominatim for reverse geocoding. The coordinates, reported accuracy, and approximate place name are then returned to the selected model through OpenRouter.
-- `Brave Search`: search queries are sent to Brave Search using the configured API key. Up to three results are returned to the model.
-- `Firecrawl Scrape`: requested page URLs are sent to Firecrawl using the configured API key. Readable page content is returned to the model and truncated to 4,000 characters.
-- `Weather`: requested place names are sent to Open-Meteo for geocoding, and the resulting coordinates are sent to Open-Meteo for forecasts. Current-location requests send the phone coordinates directly to Open-Meteo when Location is enabled.
-- `Calculator`: arithmetic and physical-unit conversions run locally. Currency codes are sent to Frankfurter for current reference rates; amounts are converted locally.
-- `Timeline`: pin content is sent to Pebble's timeline API using the current user's timeline token.
-- `Health`: requested steps, active time, distance, sleep, calories, and supported heart-rate aggregates are read from Pebble Health and returned to the selected model through OpenRouter. Ranges that include today also include available current heart rate and activity data. Availability depends on the watch and requested date range.
-
-Choice prompts and memory changes are handled by the watch and phone app, but their results become part of the conversation sent to OpenRouter.
-
-API keys, memory notes, saved conversations, statistics, settings, cached currency rates, cached model capabilities, and sanitized debug metadata are stored in the Pebble phone app's local storage. Saved conversations contain conversation text and can be viewed or edited in phone settings. Health access is disabled by default, and Health responses are informational rather than medical advice.
-
-## Build And Test
-
-Install dependencies and build the app with the Pebble SDK:
+Build with the Pebble SDK:
 
 ```sh
 npm install
 pebble build
 ```
 
-Run the PebbleKit JS regression tests with:
+Run the PebbleKit JS tests:
 
 ```sh
 npm test
 ```
 
-To replay the live watch transcript against a running emulator and capture every rendered state:
+`tools/replay_watch_stream.py` replays a recorded conversation against a running emulator and saves a screenshot of each state to `build/watch-replay/`:
 
 ```sh
 .venv/bin/python tools/replay_watch_stream.py --phone localhost:PORT
 ```
 
-Use the pypkjs `--port` shown by `pebble install --emulator ...`. Screenshots are written to `build/watch-replay/`. Add `--no-captures` to exercise the same acknowledged AppMessage sequence at full speed.
+Use the port printed by `pebble install --emulator ...`. Add `--no-captures` to run it at full speed without screenshots.
