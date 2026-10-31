@@ -8,6 +8,8 @@ The model can also use tools: it can search the web, check the weather, do unit 
 
 Runs on Pebble Time, Pebble Time Steel, Pebble 2, and Pebble Time 2 (`basalt`, `diorite`, and `emery`).
 
+> Most of the daily use testing in done on the Pebble Time 2 (`Emery`).
+
 ## Install
 
 Install it from [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b60009445123) or [RePebble](https://apps.repebble.com/cf78a459465f436ab859ad27).
