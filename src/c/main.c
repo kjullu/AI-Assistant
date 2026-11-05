@@ -142,6 +142,13 @@ static void set_voice_ui(VoiceUi ui);
 static void show_voice_failure(const char *message);
 #endif
 static void start_voice_input(bool for_choice);
+#ifdef HAS_MIC_STREAM
+#define VOICE_PHONE_WAIT_MS 6000
+static bool s_phone_ready;            // PebbleKit JS has sent ToolStates since launch
+static bool s_voice_waiting_for_phone;
+static bool s_voice_waiting_for_choice;
+static AppTimer *s_voice_phone_wait_timer;
+#endif
 static void handle_voice_transcript(const char *transcript, bool for_choice);
 
 static void update_display(const char *status);
@@ -1824,6 +1831,18 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       s_voice_openrouter = voice_openrouter;
       persist_write_bool(PERSIST_KEY_VOICE_OPENROUTER, voice_openrouter);
     }
+#ifdef HAS_MIC_STREAM
+    s_phone_ready = true;
+    if (s_voice_waiting_for_phone) {
+      // Quick launch asked for voice before the phone app was running. Start it now.
+      s_voice_waiting_for_phone = false;
+      if (s_voice_phone_wait_timer) {
+        app_timer_cancel(s_voice_phone_wait_timer);
+        s_voice_phone_wait_timer = NULL;
+      }
+      start_voice_input(s_voice_waiting_for_choice);
+    }
+#endif
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -2086,9 +2105,6 @@ static void show_voice_failure(const char *message) {
 
 static void voice_tick(void *context) {
   s_voice_tick_timer = app_timer_register(1000, voice_tick, NULL);
-  if (s_voice_level > 0) {
-    s_voice_level = s_voice_level * 2 / 3; // fall back if level updates stop
-  }
   layer_mark_dirty(s_voice_layer);
 }
 
@@ -2149,9 +2165,32 @@ static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
 }
 #endif
 
+#ifdef HAS_MIC_STREAM
+// The phone app never answered, so fall back to Pebble dictation.
+static void voice_phone_wait_timeout(void *context) {
+  s_voice_phone_wait_timer = NULL;
+  if (s_voice_waiting_for_phone) {
+    s_voice_waiting_for_phone = false;
+    start_pebble_dictation(s_voice_waiting_for_choice);
+  }
+}
+#endif
+
 // Start listening for a prompt or a choice answer.
 static void start_voice_input(bool for_choice) {
 #ifdef HAS_MIC_STREAM
+  if (s_voice_waiting_for_phone) {
+    return;
+  }
+  if (s_voice_openrouter && !s_phone_ready) {
+    // Right after launch the phone app isn't running yet and would refuse the mic stream,
+    // which used to open Pebble dictation on top of the recording screen. Wait for it.
+    s_voice_waiting_for_phone = true;
+    s_voice_waiting_for_choice = for_choice;
+    s_voice_phone_wait_timer = app_timer_register(VOICE_PHONE_WAIT_MS, voice_phone_wait_timeout, NULL);
+    update_display("Waiting for phone...");
+    return;
+  }
   if (s_voice_openrouter && !s_voice_listening && !s_voice_transcribing) {
     voice_cancel_timers();
     s_voice_for_choice = for_choice;
