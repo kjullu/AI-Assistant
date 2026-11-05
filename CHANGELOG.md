@@ -2,6 +2,8 @@
 
 - Add OpenRouter speech-to-text as an option: the watch records with the new Microphone API and a transcription model (default `elevenlabs/scribe-v2`) turns it into text. Recording gets its own screen with a timer and a live level meter. Press SELECT to send, BACK to cancel, and SELECT again to retry if transcription fails. Pebble Time 2 only, falls back to Pebble dictation elsewhere.
 - Add "Send voice straight to the model", shown when the main model accepts audio: the recording goes to the chat model itself instead of being transcribed first.
+- Quick launch with OpenRouter voice waits for the phone app before recording, instead of opening Pebble dictation on top of the recording screen.
+- Make the recording meter follow your voice more closely: the phone sends the loudest level since the last update as fast as the watch accepts them, and the meter no longer sinks every second.
 - Update to Pebble SDK 4.44 and declare the app's permissions (microphone, location, timeline, health, and the internet domains it uses).
 
 # 0.4.1

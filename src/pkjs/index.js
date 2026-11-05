@@ -3123,12 +3123,13 @@ function handleVoiceEnd(decision) {
 Pebble.addEventListener('audiostreamstart', function(e) {
   resetVoiceState();
   voiceState.streaming = true;
+  pendingVoiceLevel = -1;
+  voiceLevelInFlight = false;
   debugLog('Voice stream start rate=' + (e && e.sampleRate) + ' format=' + (e && e.format));
 });
 
-var VOICE_LEVEL_INTERVAL_MS = 250;
-var lastVoiceLevelAt = 0;
 var voiceLevelInFlight = false;
+var pendingVoiceLevel = -1; // Loudest level since the last send, or -1 when nothing is waiting
 
 // Loudness of a chunk as 0-100, on a rough log scale so normal speech fills most of the meter.
 function voiceLevel(samples) {
@@ -3139,16 +3140,20 @@ function voiceLevel(samples) {
   return Math.max(0, Math.min(100, Math.round((Math.log(rms / 60) / Math.log(10000 / 60)) * 100)));
 }
 
-// Meter updates for the recording screen. Sent directly and dropped when one is still in flight,
-// so they never queue up behind (or delay) real messages.
-function sendVoiceLevel(samples) {
-  var now = Date.now();
-  if (voiceLevelInFlight || now - lastVoiceLevelAt < VOICE_LEVEL_INTERVAL_MS) return;
-  lastVoiceLevelAt = now;
+// Meter updates for the recording screen. One message in flight at a time; while it is busy we keep
+// only the loudest level seen since, so short syllables still show and nothing queues up.
+function flushVoiceLevel() {
+  if (voiceLevelInFlight || pendingVoiceLevel < 0 || !voiceState.streaming) return;
+  var level = pendingVoiceLevel;
+  pendingVoiceLevel = -1;
   voiceLevelInFlight = true;
-  Pebble.sendAppMessage({ VoiceLevel: voiceLevel(samples) },
-    function() { voiceLevelInFlight = false; },
-    function() { voiceLevelInFlight = false; });
+  var done = function() { voiceLevelInFlight = false; flushVoiceLevel(); };
+  Pebble.sendAppMessage({ VoiceLevel: level }, done, done);
+}
+
+function sendVoiceLevel(samples) {
+  pendingVoiceLevel = Math.max(pendingVoiceLevel, voiceLevel(samples));
+  flushVoiceLevel();
 }
 
 Pebble.addEventListener('audiostream', function(e) {
