@@ -796,7 +796,8 @@ function sendToolStatesToWatch() {
       ';choice=' + (getBoolSetting('EnableChoice', true) ? '1' : '0') +
       ';timeline=' + (getBoolSetting('EnableTimeline', true) ? '1' : '0') +
       ';health=' + (getBoolSetting('EnableHealth', false) ? '1' : '0') +
-      ';voice=' + (getSetting('VoiceInput', 'pebble') === 'openrouter' ? '1' : '0')
+      ';voice=' + (getSetting('VoiceInput', 'pebble') === 'openrouter' ? '1' : '0') +
+      ';direct=' + (voiceDirectEnabled() ? '1' : '0')
   });
 }
 
@@ -3125,11 +3126,37 @@ Pebble.addEventListener('audiostreamstart', function(e) {
   debugLog('Voice stream start rate=' + (e && e.sampleRate) + ' format=' + (e && e.format));
 });
 
+var VOICE_LEVEL_INTERVAL_MS = 250;
+var lastVoiceLevelAt = 0;
+var voiceLevelInFlight = false;
+
+// Loudness of a chunk as 0-100, on a rough log scale so normal speech fills most of the meter.
+function voiceLevel(samples) {
+  var sum = 0;
+  for (var i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  var rms = Math.sqrt(sum / Math.max(1, samples.length));
+  if (rms < 60) return 0;
+  return Math.max(0, Math.min(100, Math.round((Math.log(rms / 60) / Math.log(10000 / 60)) * 100)));
+}
+
+// Meter updates for the recording screen. Sent directly and dropped when one is still in flight,
+// so they never queue up behind (or delay) real messages.
+function sendVoiceLevel(samples) {
+  var now = Date.now();
+  if (voiceLevelInFlight || now - lastVoiceLevelAt < VOICE_LEVEL_INTERVAL_MS) return;
+  lastVoiceLevelAt = now;
+  voiceLevelInFlight = true;
+  Pebble.sendAppMessage({ VoiceLevel: voiceLevel(samples) },
+    function() { voiceLevelInFlight = false; },
+    function() { voiceLevelInFlight = false; });
+}
+
 Pebble.addEventListener('audiostream', function(e) {
   if (!e || !e.data) return;
   var samples = new Int16Array(e.data);
   voiceState.chunks.push(samples);
   voiceState.sampleCount += samples.length;
+  sendVoiceLevel(samples);
 });
 
 Pebble.addEventListener('audiostreamstop', function() {

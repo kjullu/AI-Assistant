@@ -124,10 +124,22 @@ static Layer *s_choice_layer;
 static bool s_voice_openrouter;
 static bool s_voice_listening;
 static bool s_voice_transcribing;
-static bool s_voice_for_choice;
 #ifdef HAS_MIC_STREAM
+static bool s_voice_for_choice;
+// The full-screen recording UI drawn on top of the app while the mic is in use.
+typedef enum { VoiceUiHidden, VoiceUiRecording, VoiceUiWorking, VoiceUiFailed } VoiceUi;
+#define VOICE_METER_BARS 7
+static VoiceUi s_voice_ui;
+static Layer *s_voice_layer;
+static bool s_voice_direct;
 static bool s_voice_stream_started;
 static AppTimer *s_voice_timer;
+static AppTimer *s_voice_tick_timer;
+static time_t s_voice_started_at;
+static uint8_t s_voice_level;
+static char s_voice_failure[48];
+static void set_voice_ui(VoiceUi ui);
+static void show_voice_failure(const char *message);
 #endif
 static void start_voice_input(bool for_choice);
 static void handle_voice_transcript(const char *transcript, bool for_choice);
@@ -1640,9 +1652,18 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *tool_activity_tuple = dict_find(iter, MESSAGE_KEY_ToolActivity);
   Tuple *reset_first_run_tuple = dict_find(iter, MESSAGE_KEY_ResetFirstRunNotice);
   Tuple *replay_prompt_tuple = dict_find(iter, MESSAGE_KEY_ReplayPrompt);
+
+#ifdef HAS_MIC_STREAM
   Tuple *voice_transcript_tuple = dict_find(iter, MESSAGE_KEY_VoiceTranscript);
   Tuple *voice_failed_tuple = dict_find(iter, MESSAGE_KEY_VoiceFailed);
-
+  Tuple *voice_level_tuple = dict_find(iter, MESSAGE_KEY_VoiceLevel);
+  if (voice_level_tuple) {
+    if (s_voice_listening) {
+      s_voice_level = voice_level_tuple->value->uint8;
+      layer_mark_dirty(s_voice_layer);
+    }
+    return;
+  }
   if (voice_transcript_tuple || voice_failed_tuple) {
     bool was_transcribing = s_voice_transcribing;
     s_voice_transcribing = false;
@@ -1651,16 +1672,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       return;
     }
     if (voice_transcript_tuple && voice_transcript_tuple->length > 1) {
+      set_voice_ui(VoiceUiHidden);
       handle_voice_transcript(voice_transcript_tuple->value->cstring, s_voice_for_choice);
     } else {
-      vibes_double_pulse();
-      if (!s_voice_for_choice && s_chat_history[0] == '\0') {
-        s_show_home = true;
-      }
-      update_display(voice_failed_tuple ? voice_failed_tuple->value->cstring : "Didn't catch that");
+      show_voice_failure(voice_failed_tuple ? voice_failed_tuple->value->cstring : "Didn't catch that");
     }
     return;
   }
+#endif
 
   if (reset_first_run_tuple && reset_first_run_tuple->value->int32 == 1) {
     persist_delete(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED);
@@ -1797,6 +1816,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_choice_enabled = strstr(states, "choice=1") != NULL;
     s_timeline_enabled = strstr(states, "timeline=1") != NULL;
     s_health_enabled = strstr(states, "health=1") != NULL;
+#ifdef HAS_MIC_STREAM
+    s_voice_direct = strstr(states, "direct=1") != NULL;
+#endif
     bool voice_openrouter = strstr(states, "voice=1") != NULL;
     if (voice_openrouter != s_voice_openrouter) {
       s_voice_openrouter = voice_openrouter;
@@ -1947,18 +1969,127 @@ static bool send_voice_end(bool transcribe) {
   return app_message_outbox_send() == APP_MSG_OK;
 }
 
-static void voice_cancel_timer(void) {
+static void format_voice_time(char *buffer, size_t size) {
+  int seconds = (int)(time(NULL) - s_voice_started_at);
+  if (seconds < 0) seconds = 0;
+  snprintf(buffer, size, "%d:%02d", seconds / 60, seconds % 60);
+}
+
+static void draw_centered(GContext *ctx, const char *text, GFont font, GRect box) {
+  graphics_draw_text(ctx, text, font, box, GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+}
+
+static void voice_layer_update_proc(Layer *layer, GContext *ctx) {
+  GRect full = layer_get_bounds(layer);
+  GRect area = layer_get_unobstructed_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, full, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+
+  GFont small_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  const char *title = s_voice_ui == VoiceUiRecording ? "Recording"
+    : s_voice_ui == VoiceUiWorking ? (s_voice_direct && !s_voice_for_choice ? "Sending..." : "Transcribing...")
+    : "Voice input";
+  // Header that matches the app's status bar: centered text over a dotted line.
+  draw_centered(ctx, title, small_font, GRect(0, -1, full.size.w, STATUS_BAR_LAYER_HEIGHT));
+  for (int16_t x = 0; x < full.size.w; x += 2) {
+    graphics_draw_pixel(ctx, GPoint(x, STATUS_BAR_LAYER_HEIGHT - 1));
+  }
+
+  int16_t top = STATUS_BAR_LAYER_HEIGHT;
+  int16_t height = area.origin.y + area.size.h - top;
+  int16_t w = full.size.w;
+
+  if (s_voice_ui == VoiceUiRecording) {
+    char time_text[12];
+    format_voice_time(time_text, sizeof(time_text));
+    GFont time_font = fonts_get_system_font(FONT_KEY_LECO_36_BOLD_NUMBERS);
+    int16_t block_h = 44 + 8 + 26 + 10 + 18;
+    int16_t y = top + (height - block_h) / 2;
+    draw_centered(ctx, time_text, time_font, GRect(0, y, w, 44));
+    y += 44 + 8;
+
+    // Level meter: taller in the middle, scaled by the latest level from the phone.
+    static const uint8_t shape[VOICE_METER_BARS] = { 45, 70, 90, 100, 90, 70, 45 };
+    int16_t bar_w = 5, gap = 3;
+    int16_t meter_w = VOICE_METER_BARS * bar_w + (VOICE_METER_BARS - 1) * gap;
+    int16_t x = (w - meter_w) / 2;
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    for (int i = 0; i < VOICE_METER_BARS; i++) {
+      int16_t bar_h = 3 + (int16_t)((int32_t)23 * s_voice_level * shape[i] / 10000);
+      graphics_fill_rect(ctx, GRect(x + i * (bar_w + gap), y + (26 - bar_h) / 2, bar_w, bar_h), 1, GCornersAll);
+    }
+    y += 26 + 10;
+    draw_centered(ctx, "SELECT send    BACK cancel", small_font, GRect(0, y, w, 18));
+
+    // Next to the firmware's mic square, once the Listening bar has shrunk.
+    GRect accessory;
+    if (layer_get_mic_accessory_bounds(layer, &accessory)) {
+      GFont acc_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+      GRect text_box = GRect(accessory.origin.x + 8, accessory.origin.y + (accessory.size.h - 22) / 2,
+                             accessory.size.w - 8, 22);
+      graphics_draw_text(ctx, time_text, acc_font, text_box, GTextOverflowModeTrailingEllipsis,
+                         GTextAlignmentLeft, NULL);
+    }
+    return;
+  }
+
+  if (s_voice_ui == VoiceUiWorking) {
+    GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+    const char *text = s_voice_direct && !s_voice_for_choice ? "Sending your voice..." : "Turning speech into text...";
+    draw_centered(ctx, text, font, GRect(8, top + height / 2 - 30, w - 16, 60));
+    return;
+  }
+
+  // Failed
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  draw_centered(ctx, s_voice_failure, font, GRect(8, top + height / 2 - 40, w - 16, 56));
+  draw_centered(ctx, "SELECT try again    BACK close", small_font, GRect(0, top + height / 2 + 20, w, 18));
+}
+
+static void voice_cancel_timers(void) {
   if (s_voice_timer) {
     app_timer_cancel(s_voice_timer);
     s_voice_timer = NULL;
   }
+  if (s_voice_tick_timer) {
+    app_timer_cancel(s_voice_tick_timer);
+    s_voice_tick_timer = NULL;
+  }
 }
 
-static void voice_show_idle(const char *status) {
+static void set_voice_ui(VoiceUi ui) {
+  s_voice_ui = ui;
+  if (s_voice_layer) {
+    layer_set_hidden(s_voice_layer, ui == VoiceUiHidden);
+    layer_mark_dirty(s_voice_layer);
+  }
+}
+
+// Close the voice screen and go back to wherever the user started from.
+static void close_voice_ui(void) {
+  voice_cancel_timers();
+  set_voice_ui(VoiceUiHidden);
   if (!s_voice_for_choice && s_chat_history[0] == '\0') {
     s_show_home = true;
   }
-  update_display(status);
+  update_display("Ready");
+}
+
+static void show_voice_failure(const char *message) {
+  voice_cancel_timers();
+  snprintf(s_voice_failure, sizeof(s_voice_failure), "%s", message);
+  vibes_double_pulse();
+  set_voice_ui(VoiceUiFailed);
+}
+
+static void voice_tick(void *context) {
+  s_voice_tick_timer = app_timer_register(1000, voice_tick, NULL);
+  if (s_voice_level > 0) {
+    s_voice_level = s_voice_level * 2 / 3; // fall back if level updates stop
+  }
+  layer_mark_dirty(s_voice_layer);
 }
 
 // SELECT while recording: stop the mic and ask the phone for the transcript.
@@ -1966,28 +2097,26 @@ static void finish_voice_recording(void) {
   if (!s_voice_listening) {
     return;
   }
-  voice_cancel_timer();
+  voice_cancel_timers();
   s_voice_listening = false;
   mic_stream_to_phone_stop();
   if (!send_voice_end(true)) {
-    voice_show_idle("Send failed");
-    vibes_double_pulse();
+    show_voice_failure("Couldn't reach phone");
     return;
   }
   s_voice_transcribing = true;
-  update_display("Transcribing...");
+  set_voice_ui(VoiceUiWorking);
 }
 
 // BACK while recording or transcribing: drop the audio.
 static void cancel_voice_recording(void) {
-  voice_cancel_timer();
   if (s_voice_listening) {
     mic_stream_to_phone_stop();
   }
   s_voice_listening = false;
   s_voice_transcribing = false;
   send_voice_end(false);
-  voice_show_idle("Ready");
+  close_voice_ui();
 }
 
 static void voice_timer_callback(void *context) {
@@ -1997,25 +2126,26 @@ static void voice_timer_callback(void *context) {
 
 static void voice_stream_started(void *context) {
   s_voice_stream_started = true;
+  s_voice_started_at = time(NULL);
   vibes_short_pulse();
-  update_display("Listening...");
+  layer_mark_dirty(s_voice_layer);
 }
 
 static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
-  voice_cancel_timer();
+  voice_cancel_timers();
   bool was_started = s_voice_stream_started;
   s_voice_listening = false;
   s_voice_stream_started = false;
   if (!was_started && reason == MicStreamStopReasonPhone) {
     // The phone refused the stream, usually because the microphone permission isn't allowed
     // yet. Use Pebble dictation this time so the user isn't stuck.
+    set_voice_ui(VoiceUiHidden);
     update_display("Mic not allowed");
     start_pebble_dictation(s_voice_for_choice);
     return;
   }
   send_voice_end(false);
-  vibes_double_pulse();
-  voice_show_idle(reason == MicStreamStopReasonFocusLost ? "Recording interrupted" : "Recording stopped");
+  show_voice_failure(reason == MicStreamStopReasonFocusLost ? "Recording interrupted" : "Recording stopped");
 }
 #endif
 
@@ -2023,6 +2153,7 @@ static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
 static void start_voice_input(bool for_choice) {
 #ifdef HAS_MIC_STREAM
   if (s_voice_openrouter && !s_voice_listening && !s_voice_transcribing) {
+    voice_cancel_timers();
     s_voice_for_choice = for_choice;
     s_voice_stream_started = false;
     MicStreamStartResult result = mic_stream_to_phone_start(
@@ -2033,9 +2164,11 @@ static void start_voice_input(bool for_choice) {
         NULL);
     if (result == MicStreamStartOk) {
       s_voice_listening = true;
+      s_voice_level = 0;
+      s_voice_started_at = time(NULL);
       s_voice_timer = app_timer_register(VOICE_MAX_RECORD_MS, voice_timer_callback, NULL);
-      s_show_home = false;
-      update_display("Starting mic...");
+      s_voice_tick_timer = app_timer_register(1000, voice_tick, NULL);
+      set_voice_ui(VoiceUiRecording);
       return;
     }
     APP_LOG(APP_LOG_LEVEL_WARNING, "Mic stream failed: %d", (int)result);
@@ -2052,6 +2185,10 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     return;
   }
   if (s_voice_transcribing) {
+    return;
+  }
+  if (s_voice_ui == VoiceUiFailed) {
+    start_voice_input(s_voice_for_choice);
     return;
   }
 #endif
@@ -2095,6 +2232,10 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
 #ifdef HAS_MIC_STREAM
   if (s_voice_listening || s_voice_transcribing) {
     cancel_voice_recording();
+    return;
+  }
+  if (s_voice_ui == VoiceUiFailed) {
+    close_voice_ui();
     return;
   }
 #endif
@@ -2388,6 +2529,14 @@ static void window_load(Window *window) {
   //AI: This must be added after the scroll layer so the down indicator appears on top.
   layer_add_child(window_layer, s_scroll_indicator_down);
 
+#ifdef HAS_MIC_STREAM
+  // Added last so the recording screen covers everything, including the status bar.
+  s_voice_layer = layer_create(bounds);
+  layer_set_update_proc(s_voice_layer, voice_layer_update_proc);
+  layer_add_child(window_layer, s_voice_layer);
+  layer_set_hidden(s_voice_layer, true);
+#endif
+
   // Show the initial idle screen.
   update_display("Ready");
 }
@@ -2490,6 +2639,10 @@ static void window_unload(Window *window) {
   layer_destroy(s_settings_layer);
   layer_destroy(s_sessions_layer);
   layer_destroy(s_choice_layer);
+#ifdef HAS_MIC_STREAM
+  layer_destroy(s_voice_layer);
+  s_voice_layer = NULL;
+#endif
   status_bar_layer_destroy(s_status_layer);
   layer_destroy(s_scroll_indicator_down);
   scroll_layer_destroy(s_scroll_layer);

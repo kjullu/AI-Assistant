@@ -1144,10 +1144,10 @@ test('a too short voice recording reports that nothing was heard', () => {
 test('tool states tell the watch which speech-to-text to use', () => {
   const runtime = createRuntime({ VoiceInput: 'openrouter' });
   runtime.context.sendToolStatesToWatch();
-  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=1$/);
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=1;direct=0$/);
   runtime.storage.set('VoiceInput', 'pebble');
   runtime.context.sendToolStatesToWatch();
-  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=0$/);
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=0;direct=0$/);
 });
 
 test('with an audio-capable model the recording goes straight to the chat model', () => {

@@ -88,7 +88,8 @@
       "VoiceFailed",
       "VoiceInput",
       "VoiceModel",
-      "VoiceDirect"
+      "VoiceDirect",
+      "VoiceLevel"
     ],
     "resources": {
       "media": []
