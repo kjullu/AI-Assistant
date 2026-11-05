@@ -1072,3 +1072,113 @@ test('AppMessage retries stop after three failures and unblock the queue', () =>
   assert.equal(sends.length, 4);
   assert.equal(sends[3].dict.Status, 'Second');
 });
+
+function streamVoice(runtime, sampleValues) {
+  runtime.listeners.audiostreamstart({ sampleRate: 16000, format: 'pcm16le' });
+  const samples = new Int16Array(sampleValues);
+  runtime.listeners.audiostream({ data: samples.buffer });
+}
+
+test('a recorded voice prompt is sent to the speech model as WAV and the transcript goes back', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  const samples = Array.from({ length: 8000 }, (_, i) => (i % 200) - 100);
+  streamVoice(runtime, samples);
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+  assert.equal(runtime.requests.length, 0, 'waits for audiostreamstop before sending');
+  runtime.listeners.audiostreamstop({});
+
+  assert.equal(runtime.requests.length, 1);
+  const request = runtime.requests[0];
+  assert.equal(request.url, 'https://openrouter.ai/api/v1/chat/completions');
+  const body = JSON.parse(request.body);
+  assert.equal(body.model, 'google/gemini-3.8-flash');
+  const audio = body.messages[1].content[1].input_audio;
+  assert.equal(audio.format, 'wav');
+
+  const wav = Buffer.from(audio.data, 'base64');
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+  assert.equal(wav.readUInt32LE(24), 16000);
+  assert.equal(wav.readUInt16LE(34), 16);
+  assert.equal(wav.readUInt32LE(40), samples.length * 2);
+  assert.equal(wav.length, 44 + samples.length * 2);
+  for (let i = 0; i < samples.length; i += 997) {
+    assert.equal(wav.readInt16LE(44 + i * 2), samples[i]);
+  }
+
+  request.status = 200;
+  request.responseText = JSON.stringify({ choices: [{ message: { content: '"Send a demo message."\n' } }] });
+  request.onload();
+  assert.ok(runtime.sentMessages.some(message => message.VoiceTranscript === 'Send a demo message.'));
+});
+
+test('base64 encoding matches Node for every padding length', () => {
+  const runtime = createRuntime();
+  for (const length of [0, 1, 2, 3, 4, 5, 20000]) {
+    const bytes = new Uint8Array(length).map((_, i) => (i * 37) & 255);
+    assert.equal(runtime.context.bytesToBase64(bytes), Buffer.from(bytes).toString('base64'));
+  }
+});
+
+test('a cancelled voice recording is never transcribed', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  streamVoice(runtime, new Array(8000).fill(5));
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 0 } });
+  runtime.listeners.audiostreamstop({});
+  assert.equal(runtime.requests.length, 0);
+});
+
+test('a too short voice recording reports that nothing was heard', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  streamVoice(runtime, new Array(100).fill(5));
+  runtime.listeners.audiostreamstop({});
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+  assert.equal(runtime.requests.length, 0);
+  assert.ok(runtime.sentMessages.some(message => message.VoiceFailed === "Didn't catch that"));
+});
+
+test('tool states tell the watch which speech-to-text to use', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  runtime.context.sendToolStatesToWatch();
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=1$/);
+  runtime.storage.set('VoiceInput', 'pebble');
+  runtime.context.sendToolStatesToWatch();
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=0$/);
+});
+
+function recordAndSend(runtime) {
+  streamVoice(runtime, new Array(8000).fill(7));
+  runtime.listeners.audiostreamstop({});
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+}
+
+test('transcription models like Scribe use the audio transcriptions endpoint', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter', VoiceModel: 'elevenlabs/scribe-v2' });
+  recordAndSend(runtime);
+  const request = runtime.requests[0];
+  assert.equal(request.url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+  const body = JSON.parse(request.body);
+  assert.equal(body.model, 'elevenlabs/scribe-v2');
+  assert.equal(body.input_audio.format, 'wav');
+  assert.equal(body.messages, undefined);
+
+  request.status = 200;
+  request.responseText = JSON.stringify({ text: 'Hello watch.', usage: { cost: 0.001, seconds: 0.5 } });
+  request.onload();
+  assert.ok(runtime.sentMessages.some(message => message.VoiceTranscript === 'Hello watch.'));
+});
+
+test('a chat-endpoint rejection retries on the transcription endpoint and is remembered', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter', VoiceModel: 'someone/new-voice-model' });
+  recordAndSend(runtime);
+  const first = runtime.requests[0];
+  assert.equal(first.url, 'https://openrouter.ai/api/v1/chat/completions');
+  first.status = 400;
+  first.responseText = JSON.stringify({ error: { code: 400, message: 'someone/new-voice-model is a transcription model and cannot be used with the chat/completions endpoint. Use the /api/v1/audio/transcriptions endpoint instead.' } });
+  first.onload();
+
+  assert.equal(runtime.requests.length, 2);
+  assert.equal(runtime.requests[1].url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+  assert.equal(runtime.storage.get('VoiceEndpoint:someone/new-voice-model'), 'transcription');
+  assert.ok(!runtime.sentMessages.some(message => message.VoiceFailed));
+});

@@ -80,6 +80,36 @@ module.exports = [
     "items": [
       {
         "type": "heading",
+        "defaultValue": "Voice input"
+      },
+      {
+        "type": "select",
+        "messageKey": "VoiceInput",
+        "defaultValue": "pebble",
+        "label": "Speech to text",
+        "description": "OpenRouter records on the watch and sends the audio to the speech model below. Press SELECT to stop and send, BACK to cancel. Works on Pebble Time 2 with firmware 4.44.3 or newer, and needs the microphone permission allowed in the Pebble app. Other watches keep using Pebble dictation.",
+        "options": [
+          { "label": "Pebble dictation", "value": "pebble" },
+          { "label": "OpenRouter model", "value": "openrouter" }
+        ]
+      },
+      {
+        "type": "input",
+        "messageKey": "VoiceModel",
+        "defaultValue": "google/gemini-3.8-flash",
+        "label": "Speech model",
+        "description": "An OpenRouter transcription model, like elevenlabs/scribe-v2, or any chat model that accepts audio input.",
+        "attributes": {
+          "placeholder": "google/gemini-3.8-flash"
+        }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
         "defaultValue": "Tools"
       },
       {

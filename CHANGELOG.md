@@ -1,3 +1,9 @@
+# 0.5.0
+
+- Add OpenRouter speech-to-text as an option: the watch records with the new Microphone API and an audio model (default `google/gemini-3.8-flash`) transcribes it. Press SELECT to send, BACK to cancel. Pebble Time 2 only, falls back to Pebble dictation elsewhere.
+- Support OpenRouter transcription models like `elevenlabs/scribe-v2` through the audio transcriptions endpoint.
+- Update to Pebble SDK 4.44 and declare the app's permissions (microphone, location, timeline, health, and the internet domains it uses).
+
 # 0.4.1
 
 - Update the app name to AI Assistant.

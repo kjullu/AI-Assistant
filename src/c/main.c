@@ -37,6 +37,15 @@
 #define STATS_BUFFER_SIZE 512
 #define TOOL_HISTORY_PREFIX "[tool] "
 #define PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED 1001
+#define PERSIST_KEY_VOICE_OPENROUTER 1002
+// Stop a custom voice recording automatically after this long.
+#define VOICE_MAX_RECORD_MS 60000
+
+// The Microphone API (SDK 4.44) only works on emery, flint and gabbro. basalt, chalk and diorite
+// also define PBL_MICROPHONE, but only for dictation, and they define PBL_SDK_FROZEN.
+#if defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
+#define HAS_MIC_STREAM 1
+#endif
 
 // Pointers to Pebble UI/session objects created at runtime.
 static Window *s_window;
@@ -109,6 +118,19 @@ static int16_t s_choice_scroll_offset;
 static char s_choice_answer_buffer[MAX_CHOICE_TEXT + 8];
 static bool s_choice_waiting_dictation;
 static Layer *s_choice_layer;
+
+// Custom speech-to-text: stream the microphone to PebbleKit JS, which transcribes it through
+// OpenRouter and sends the text back. Falls back to Pebble dictation when it isn't available.
+static bool s_voice_openrouter;
+static bool s_voice_listening;
+static bool s_voice_transcribing;
+static bool s_voice_for_choice;
+#ifdef HAS_MIC_STREAM
+static bool s_voice_stream_started;
+static AppTimer *s_voice_timer;
+#endif
+static void start_voice_input(bool for_choice);
+static void handle_voice_transcript(const char *transcript, bool for_choice);
 
 static void update_display(const char *status);
 static void clear_watch_session(void);
@@ -1618,6 +1640,27 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *tool_activity_tuple = dict_find(iter, MESSAGE_KEY_ToolActivity);
   Tuple *reset_first_run_tuple = dict_find(iter, MESSAGE_KEY_ResetFirstRunNotice);
   Tuple *replay_prompt_tuple = dict_find(iter, MESSAGE_KEY_ReplayPrompt);
+  Tuple *voice_transcript_tuple = dict_find(iter, MESSAGE_KEY_VoiceTranscript);
+  Tuple *voice_failed_tuple = dict_find(iter, MESSAGE_KEY_VoiceFailed);
+
+  if (voice_transcript_tuple || voice_failed_tuple) {
+    bool was_transcribing = s_voice_transcribing;
+    s_voice_transcribing = false;
+    if (!was_transcribing) {
+      // The user cancelled while the phone was still transcribing.
+      return;
+    }
+    if (voice_transcript_tuple && voice_transcript_tuple->length > 1) {
+      handle_voice_transcript(voice_transcript_tuple->value->cstring, s_voice_for_choice);
+    } else {
+      vibes_double_pulse();
+      if (!s_voice_for_choice && s_chat_history[0] == '\0') {
+        s_show_home = true;
+      }
+      update_display(voice_failed_tuple ? voice_failed_tuple->value->cstring : "Didn't catch that");
+    }
+    return;
+  }
 
   if (reset_first_run_tuple && reset_first_run_tuple->value->int32 == 1) {
     persist_delete(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED);
@@ -1754,6 +1797,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_choice_enabled = strstr(states, "choice=1") != NULL;
     s_timeline_enabled = strstr(states, "timeline=1") != NULL;
     s_health_enabled = strstr(states, "health=1") != NULL;
+    bool voice_openrouter = strstr(states, "voice=1") != NULL;
+    if (voice_openrouter != s_voice_openrouter) {
+      s_voice_openrouter = voice_openrouter;
+      persist_write_bool(PERSIST_KEY_VOICE_OPENROUTER, voice_openrouter);
+    }
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -1821,7 +1869,7 @@ static void outbox_sent_callback(DictionaryIterator *iter, void *context) {
     if (s_active_request_id == 0) {
       s_active_request_id = 1;
     }
-    dictation_session_start(s_dictation_session);
+    start_voice_input(false);
   }
 }
 
@@ -1835,46 +1883,178 @@ static void inbox_dropped_callback(AppMessageResult reason, void *context) {
 // Pebble dictation calls this after speech recognition succeeds or fails.
 //USR: If user has finished their dictation, then send it to the Phone, else update the display with a "Dictation cancelled"
 //AI: If speech recognition succeeded, send the transcription to the phone; otherwise show "Dictation cancelled".
+static void handle_voice_transcript(const char *transcript, bool for_choice) {
+  if (for_choice) {
+    DictionaryIterator *iter;
+    AppMessageResult result = app_message_outbox_begin(&iter);
+    if (result != APP_MSG_OK || !iter) {
+      update_display("Choice send failed");
+      vibes_double_pulse();
+      return;
+    }
+    dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcript);
+    dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
+    dict_write_end(iter);
+    if (app_message_outbox_send() != APP_MSG_OK) {
+      update_display("Choice send failed");
+      vibes_double_pulse();
+      return;
+    }
+    append_choice_answer_to_history(transcript);
+    close_choice_screen();
+    s_show_home = false;
+    update_display("Sending...");
+    return;
+  }
+
+  // Forward the recognized speech to the phone-side JS for AI processing.
+  send_prompt(transcript);
+}
+
 static void dictation_callback(DictationSession *session, DictationSessionStatus status,
                                char *transcription, void *context) {
   if (s_choice_waiting_dictation) {
     s_choice_waiting_dictation = false;
     if (status == DictationSessionStatusSuccess) {
-      DictionaryIterator *iter;
-      AppMessageResult result = app_message_outbox_begin(&iter);
-      if (result != APP_MSG_OK || !iter) {
-        update_display("Choice send failed");
-        vibes_double_pulse();
-        return;
-      }
-      dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcription);
-      dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
-      dict_write_end(iter);
-      if (app_message_outbox_send() != APP_MSG_OK) {
-        update_display("Choice send failed");
-        vibes_double_pulse();
-        return;
-      }
-      append_choice_answer_to_history(transcription);
-      close_choice_screen();
-      s_show_home = false;
-      update_display("Sending...");
+      handle_voice_transcript(transcription, true);
     }
     // On cancel, leave the choice screen open so user can try again/back
     return;
   }
 
   if (status == DictationSessionStatusSuccess) {
-    // Forward the recognized speech to the phone-side JS for AI processing.
-    send_prompt(transcription);
+    handle_voice_transcript(transcription, false);
   } else {
     s_show_home = true;
     update_display("Ready");
   }
 }
 
+static void start_pebble_dictation(bool for_choice) {
+  s_choice_waiting_dictation = for_choice;
+  dictation_session_start(s_dictation_session);
+}
+
+#ifdef HAS_MIC_STREAM
+// Tell the phone whether to transcribe the recording (1) or throw it away (0).
+static bool send_voice_end(bool transcribe) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter) {
+    return false;
+  }
+  dict_write_uint8(iter, MESSAGE_KEY_VoiceEnd, transcribe ? 1 : 0);
+  dict_write_end(iter);
+  return app_message_outbox_send() == APP_MSG_OK;
+}
+
+static void voice_cancel_timer(void) {
+  if (s_voice_timer) {
+    app_timer_cancel(s_voice_timer);
+    s_voice_timer = NULL;
+  }
+}
+
+static void voice_show_idle(const char *status) {
+  if (!s_voice_for_choice && s_chat_history[0] == '\0') {
+    s_show_home = true;
+  }
+  update_display(status);
+}
+
+// SELECT while recording: stop the mic and ask the phone for the transcript.
+static void finish_voice_recording(void) {
+  if (!s_voice_listening) {
+    return;
+  }
+  voice_cancel_timer();
+  s_voice_listening = false;
+  mic_stream_to_phone_stop();
+  if (!send_voice_end(true)) {
+    voice_show_idle("Send failed");
+    vibes_double_pulse();
+    return;
+  }
+  s_voice_transcribing = true;
+  update_display("Transcribing...");
+}
+
+// BACK while recording or transcribing: drop the audio.
+static void cancel_voice_recording(void) {
+  voice_cancel_timer();
+  if (s_voice_listening) {
+    mic_stream_to_phone_stop();
+  }
+  s_voice_listening = false;
+  s_voice_transcribing = false;
+  send_voice_end(false);
+  voice_show_idle("Ready");
+}
+
+static void voice_timer_callback(void *context) {
+  s_voice_timer = NULL;
+  finish_voice_recording();
+}
+
+static void voice_stream_started(void *context) {
+  s_voice_stream_started = true;
+  vibes_short_pulse();
+  update_display("Listening...");
+}
+
+static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
+  voice_cancel_timer();
+  bool was_started = s_voice_stream_started;
+  s_voice_listening = false;
+  s_voice_stream_started = false;
+  if (!was_started && reason == MicStreamStopReasonPhone) {
+    // The phone refused the stream, usually because the microphone permission isn't allowed
+    // yet. Use Pebble dictation this time so the user isn't stuck.
+    update_display("Mic not allowed");
+    start_pebble_dictation(s_voice_for_choice);
+    return;
+  }
+  send_voice_end(false);
+  vibes_double_pulse();
+  voice_show_idle(reason == MicStreamStopReasonFocusLost ? "Recording interrupted" : "Recording stopped");
+}
+#endif
+
+// Start listening for a prompt or a choice answer.
+static void start_voice_input(bool for_choice) {
+#ifdef HAS_MIC_STREAM
+  if (s_voice_openrouter && !s_voice_listening && !s_voice_transcribing) {
+    s_voice_for_choice = for_choice;
+    s_voice_stream_started = false;
+    MicStreamStartResult result = mic_stream_to_phone_start(
+        (MicStreamHandlers){
+          .started = voice_stream_started,
+          .stopped = voice_stream_stopped,
+        },
+        NULL);
+    if (result == MicStreamStartOk) {
+      s_voice_listening = true;
+      s_voice_timer = app_timer_register(VOICE_MAX_RECORD_MS, voice_timer_callback, NULL);
+      s_show_home = false;
+      update_display("Starting mic...");
+      return;
+    }
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Mic stream failed: %d", (int)result);
+  }
+#endif
+  start_pebble_dictation(for_choice);
+}
+
 // SELECT is the only app-specific button action; UP/DOWN are kept for scrolling.
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+#ifdef HAS_MIC_STREAM
+  if (s_voice_listening) {
+    finish_voice_recording();
+    return;
+  }
+  if (s_voice_transcribing) {
+    return;
+  }
+#endif
   if (s_show_new_session) {
     if (s_new_session_selection == 0) {
       cancel_new_session_screen();
@@ -1887,8 +2067,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_show_choice) {
     if (s_choice_selection >= 0 && s_choice_selection < s_choice_option_count) {
       if (strcmp(s_choice_options[s_choice_selection], "Say your own") == 0) {
-        s_choice_waiting_dictation = true;
-        dictation_session_start(s_dictation_session);
+        start_voice_input(true);
       } else {
         send_choice_answer();
       }
@@ -1901,18 +2080,24 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     return;
   }
 
-  // Ask Pebble to show its dictation UI and start listening to the microphone.
-  dictation_session_start(s_dictation_session);
+  // Listen for a prompt, with the custom STT or Pebble's dictation UI.
+  start_voice_input(false);
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice || s_show_new_session) {
+  if (s_show_choice || s_show_new_session || s_voice_listening || s_voice_transcribing) {
     return;
   }
   open_new_session_screen();
 }
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
+#ifdef HAS_MIC_STREAM
+  if (s_voice_listening || s_voice_transcribing) {
+    cancel_voice_recording();
+    return;
+  }
+#endif
   if (s_show_new_session) {
     cancel_new_session_screen();
     return;
@@ -2215,7 +2400,7 @@ static void window_appear(Window *window) {
 
   if (s_start_dictation_on_appear && !s_show_first_run) {
     s_start_dictation_on_appear = false;
-    dictation_session_start(s_dictation_session);
+    start_voice_input(false);
   }
 }
 
@@ -2336,6 +2521,7 @@ static void init(void) {
   dictation_session_enable_confirmation(s_dictation_session, false); // Purposly set to false
 
   s_start_dictation_on_appear = launch_reason() == APP_LAUNCH_QUICK_LAUNCH;
+  s_voice_openrouter = persist_read_bool(PERSIST_KEY_VOICE_OPENROUTER);
   window_stack_push(s_window, true); //USR: Make our window appear on the screen
   //AI: Push the window onto Pebble's window stack so it appears on screen, with animation.
 
@@ -2351,6 +2537,9 @@ static void init(void) {
 
 // Release resources before the app exits.
 static void deinit(void) {
+#ifdef HAS_MIC_STREAM
+  mic_stream_to_phone_stop();
+#endif
   // Tear down runtime objects created during init().
   dictation_session_destroy(s_dictation_session);
   if (s_first_run_window) {
