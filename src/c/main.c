@@ -1936,13 +1936,13 @@ static void start_pebble_dictation(bool for_choice) {
 }
 
 #ifdef HAS_MIC_STREAM
-// Tell the phone whether to transcribe the recording (1) or throw it away (0).
+// 0 = throw it away, 1 = a new prompt, 2 = an answer to a choice prompt.
 static bool send_voice_end(bool transcribe) {
   DictionaryIterator *iter;
   if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter) {
     return false;
   }
-  dict_write_uint8(iter, MESSAGE_KEY_VoiceEnd, transcribe ? 1 : 0);
+  dict_write_uint8(iter, MESSAGE_KEY_VoiceEnd, transcribe ? (s_voice_for_choice ? 2 : 1) : 0);
   dict_write_end(iter);
   return app_message_outbox_send() == APP_MSG_OK;
 }

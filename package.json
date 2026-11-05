@@ -87,7 +87,8 @@
       "VoiceTranscript",
       "VoiceFailed",
       "VoiceInput",
-      "VoiceModel"
+      "VoiceModel",
+      "VoiceDirect"
     ],
     "resources": {
       "media": []
