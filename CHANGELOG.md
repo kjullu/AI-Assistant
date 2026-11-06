@@ -12,7 +12,6 @@
 - Truncate watch text at UTF-8 boundaries and phone-side summaries and options at complete emoji pairs, preventing blank choice questions and broken text.
 - Let PebbleOS render its full emoji set, including the new color emoji, instead of replacing emoji with text placeholders.
 - Preserve emoji sequences and keep emoji pairs intact when splitting complete replies into watch messages.
-
 - Add OpenRouter speech-to-text as an option: the watch records with the new Microphone API and a transcription model (default `elevenlabs/scribe-v2`) turns it into text. Recording gets its own screen with a timer and a live level meter. Press SELECT to send, BACK to cancel, and SELECT again to retry if transcription fails. Pebble Time 2 only, falls back to Pebble dictation elsewhere.
 - Add "Send voice straight to the model", shown when the main model accepts audio: the recording goes to the chat model itself instead of being transcribed first.
 - Quick launch with OpenRouter voice waits for the phone app before recording, instead of opening Pebble dictation on top of the recording screen.
