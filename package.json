@@ -1,7 +1,7 @@
 {
   "name": "pebble-assistant",
   "author": "Kjullu, GPT-5.6 Sol",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "keywords": [
     "Ai-chat-app"
   ],
@@ -27,31 +27,6 @@
       "diorite",
       "emery"
     ],
-    "usesPermissions": [
-      {
-        "name": "Internet",
-        "parameters": {
-          "domains": [
-            "openrouter.ai",
-            "api.search.brave.com",
-            "api.firecrawl.dev",
-            "open-meteo.com",
-            "nominatim.openstreetmap.org",
-            "timeline-api.getpebble.com",
-            "api.frankfurter.dev"
-          ]
-        }
-      },
-      "Location",
-      "Calendar",
-      "Timeline",
-      "Health",
-      "Notifications",
-      "ReadMusic",
-      "ControlMusic",
-      "LaunchApps",
-      "FindMyPhone"
-    ],
     "watchapp": {
       "watchface": false
     },
@@ -60,6 +35,7 @@
       "ClearSession",
       "CancelRequest",
       "ToggleLocation",
+      "ToggleOpenStreetMap",
       "ToggleMemory",
       "ToggleCalculator",
       "ToggleSearch",
@@ -77,6 +53,7 @@
       "OpenRouterApiKey",
       "OpenRouterModel",
       "EnableLocation",
+      "EnableOpenStreetMap",
       "EnableMemory",
       "EnableCalculator",
       "EnableSearch",
@@ -108,12 +85,46 @@
       "ToolActivity",
       "ResetFirstRunNotice",
       "ReplayPrompt",
+      "VoiceEnd",
+      "VoiceTranscript",
+      "VoiceFailed",
+      "VoiceInput",
+      "VoiceModel",
+      "VoiceDirect",
+      "VoiceLevel",
       "EnablePlugins",
       "EnablePluginActions",
       "EnablePluginNotifications"
     ],
     "resources": {
       "media": []
-    }
+    },
+    "usesPermissions": [
+      "WatchMicrophone",
+      "Location",
+      "Calendar",
+      "Timeline",
+      "Health",
+      "Notifications",
+      "ReadMusic",
+      "ControlMusic",
+      "LaunchApps",
+      "FindMyPhone",
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "openrouter.ai",
+            "api.search.brave.com",
+            "api.firecrawl.dev",
+            "open-meteo.com",
+            "nominatim.openstreetmap.org",
+            "routing.openstreetmap.de",
+            "timeline-api.getpebble.com",
+            "api.frankfurter.dev"
+          ]
+        }
+      }
+    ]
   }
 }
