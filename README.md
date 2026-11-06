@@ -20,6 +20,12 @@ You need an [OpenRouter API key](https://openrouter.ai/keys), which usually star
 
 Then open the app on the watch and press `SELECT` to start talking. Launching it through Quick Launch starts dictation straight away.
 
+## Voice input
+
+Pebble dictation is the default. On Pebble Time 2 with firmware 4.44.3+, choose `OpenRouter model` under `Speech to text` in phone settings and allow microphone access. Press `SELECT` to send the recording or `BACK` to cancel.
+
+Recordings use `elevenlabs/scribe-v2` for transcription unless your chat model accepts audio and `Send voice straight to the model` is enabled. You can change the speech model in settings; spoken choice answers always use transcription.
+
 ## Controls
 
 | Button | Home | Conversation |
@@ -52,7 +58,11 @@ The phone settings also let you pick a provider and routing priority, set reason
 
 ## Privacy
 
-Your prompts, recent conversation, memory notes, extra system prompt, and tool results go to OpenRouter and the model you picked. Enabled tools also send data to other services:
+Your prompts, recent conversation, memory notes, extra system prompt, and tool results go to OpenRouter and the model you picked.
+
+OpenRouter voice input sends recordings through OpenRouter to your speech or chat model's provider.
+
+Enabled tools also send data to other services:
 
 - Location: coordinates go to Nominatim to look up a place name.
 - OpenStreetMap: your coordinates and the place you ask for go to Nominatim; route start and end points go to the FOSSGIS OSRM server (routing.openstreetmap.de). Map data can be incomplete or out of date.
@@ -69,7 +79,7 @@ OpenStreetMap is a trademark of the OpenStreetMap Foundation, used with permissi
 
 ## Build and test
 
-Build with the Pebble SDK:
+Build with Pebble SDK 4.44:
 
 ```sh
 npm install
