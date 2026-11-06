@@ -282,7 +282,7 @@ test('free model capability lookup prefers the exact model id', () => {
   request.onload();
 
   assert.equal(capability.id, 'vendor/model:free');
-  assert.ok(runtime.storage.has('ReasoningCapability:vendor/model:free'));
+  assert.ok(runtime.storage.has('ModelCapability:v2:vendor/model:free'));
 });
 
 test('configured provider restricts OpenRouter routing', () => {
@@ -1071,4 +1071,166 @@ test('AppMessage retries stop after three failures and unblock the queue', () =>
 
   assert.equal(sends.length, 4);
   assert.equal(sends[3].dict.Status, 'Second');
+});
+
+function streamVoice(runtime, sampleValues) {
+  runtime.listeners.audiostreamstart({ sampleRate: 16000, format: 'pcm16le' });
+  const samples = new Int16Array(sampleValues);
+  runtime.listeners.audiostream({ data: samples.buffer });
+}
+
+function audioModelInfo(runtime, model, modalities) {
+  runtime.storage.set('ModelCapability:v2:' + model, JSON.stringify({
+    fetchedAt: Date.now(),
+    model: { id: model, supported_parameters: [], input_modalities: modalities }
+  }));
+}
+
+test('a recording goes to the speech model as WAV and the transcript goes back', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  const samples = Array.from({ length: 8000 }, (_, i) => (i % 200) - 100);
+  streamVoice(runtime, samples);
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+  assert.equal(runtime.requests.length, 0, 'waits for audiostreamstop before sending');
+  runtime.listeners.audiostreamstop({});
+
+  const request = runtime.requests[0];
+  assert.equal(request.url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+  const body = JSON.parse(request.body);
+  assert.equal(body.model, 'elevenlabs/scribe-v2');
+  assert.equal(body.input_audio.format, 'wav');
+
+  const wav = Buffer.from(body.input_audio.data, 'base64');
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+  assert.equal(wav.readUInt32LE(24), 16000);
+  assert.equal(wav.readUInt16LE(34), 16);
+  assert.equal(wav.length, 44 + samples.length * 2);
+  for (let i = 0; i < samples.length; i += 997) {
+    assert.equal(wav.readInt16LE(44 + i * 2), samples[i]);
+  }
+
+  request.status = 200;
+  request.responseText = JSON.stringify({ text: ' Send a demo message.\n', usage: { cost: 0.001 } });
+  request.onload();
+  assert.ok(runtime.sentMessages.some(message => message.VoiceTranscript === 'Send a demo message.'));
+});
+
+test('base64 encoding matches Node for every padding length', () => {
+  const runtime = createRuntime();
+  for (const length of [0, 1, 2, 3, 4, 5, 20000]) {
+    const bytes = new Uint8Array(length).map((_, i) => (i * 37) & 255);
+    assert.equal(runtime.context.bytesToBase64(bytes), Buffer.from(bytes).toString('base64'));
+  }
+});
+
+test('a cancelled voice recording is never transcribed', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  streamVoice(runtime, new Array(8000).fill(5));
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 0 } });
+  runtime.listeners.audiostreamstop({});
+  assert.equal(runtime.requests.length, 0);
+});
+
+test('a too short voice recording reports that nothing was heard', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  streamVoice(runtime, new Array(100).fill(5));
+  runtime.listeners.audiostreamstop({});
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+  assert.equal(runtime.requests.length, 0);
+  assert.ok(runtime.sentMessages.some(message => message.VoiceFailed === "Didn't catch that"));
+});
+
+test('tool states tell the watch which speech-to-text to use', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  runtime.context.sendToolStatesToWatch();
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=1;direct=0$/);
+  runtime.storage.set('VoiceInput', 'pebble');
+  runtime.context.sendToolStatesToWatch();
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;voice=0;direct=0$/);
+});
+
+test('with an audio-capable model the recording goes straight to the chat model', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter', OpenRouterModel: 'google/gemini-3.8-flash' });
+  audioModelInfo(runtime, 'google/gemini-3.8-flash', ['text', 'audio']);
+  streamVoice(runtime, new Array(8000).fill(9));
+  runtime.listeners.audiostreamstop({});
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+
+  assert.equal(runtime.requests.length, 0, 'no transcription request');
+  assert.ok(runtime.sentMessages.some(message => message.VoiceTranscript === '(Voice message)'));
+
+  runtime.listeners.appmessage({ payload: { Prompt: '(Voice message)', RequestId: 1 } });
+  const chat = runtime.requests.at(-1);
+  assert.equal(chat.url, 'https://openrouter.ai/api/v1/chat/completions');
+  const user = JSON.parse(chat.body).messages.at(-1);
+  assert.equal(user.role, 'user');
+  assert.equal(user.content[1].type, 'input_audio');
+  assert.equal(user.content[1].input_audio.format, 'wav');
+  assert.equal(runtime.context.conversationHistory.at(-1).content, '(Voice message)');
+});
+
+test('choice answers and non-audio models still use the speech model', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter', OpenRouterModel: 'google/gemini-3.8-flash' });
+  audioModelInfo(runtime, 'google/gemini-3.8-flash', ['text', 'audio']);
+  streamVoice(runtime, new Array(8000).fill(9));
+  runtime.listeners.audiostreamstop({});
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 2 } });
+  assert.equal(runtime.requests.at(-1).url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+
+  const textOnly = createRuntime({ VoiceInput: 'openrouter', OpenRouterModel: 'openai/gpt-6.1-sol' });
+  audioModelInfo(textOnly, 'openai/gpt-6.1-sol', ['text', 'image']);
+  streamVoice(textOnly, new Array(8000).fill(9));
+  textOnly.listeners.audiostreamstop({});
+  textOnly.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+  assert.equal(textOnly.requests.at(-1).url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+
+  const toggledOff = createRuntime({ VoiceInput: 'openrouter', VoiceDirect: '0', OpenRouterModel: 'google/gemini-3.8-flash' });
+  audioModelInfo(toggledOff, 'google/gemini-3.8-flash', ['text', 'audio']);
+  streamVoice(toggledOff, new Array(8000).fill(9));
+  toggledOff.listeners.audiostreamstop({});
+  toggledOff.listeners.appmessage({ payload: { VoiceEnd: 1 } });
+  assert.equal(toggledOff.requests.at(-1).url, 'https://openrouter.ai/api/v1/audio/transcriptions');
+});
+
+function meterRun(runtime, amplitudes) {
+  const levels = [];
+  runtime.setSendHandler((dict, success) => {
+    if (dict.VoiceLevel !== undefined) levels.push(dict.VoiceLevel);
+    success({});
+  });
+  runtime.listeners.audiostreamstart({ sampleRate: 16000, format: 'pcm16le' });
+  for (const amp of amplitudes) {
+    const chunk = new Int16Array(1600).map((_, i) => (i % 2 ? amp : -amp));
+    runtime.listeners.audiostream({ data: chunk.buffer });
+  }
+  runtime.listeners.audiostreamstop({});
+  return levels;
+}
+
+test('voice meter fills for quiet and loud speakers, stays low in silence', () => {
+  const quiet = meterRun(createRuntime(), Array(30).fill(300));
+  assert.ok(quiet[quiet.length - 1] >= 90, 'quiet voice fills the meter: ' + quiet.slice(-3));
+
+  const loud = meterRun(createRuntime(), Array(30).fill(8000));
+  assert.ok(loud[loud.length - 1] >= 90, 'loud voice fills the meter: ' + loud.slice(-3));
+
+  const silent = meterRun(createRuntime(), Array(30).fill(40));
+  assert.equal(silent[silent.length - 1], 0);
+
+  const noise = meterRun(createRuntime(), Array(30).fill(120));
+  assert.ok(noise[noise.length - 1] > 0, 'wind/room noise still shows');
+});
+
+test('one tap does not shrink the meter for speech after it', () => {
+  const runtime = createRuntime();
+  const levels = meterRun(runtime, [...Array(20).fill(800), 30000, ...Array(5).fill(800)]);
+  assert.ok(levels[levels.length - 1] >= 85, 'speech after a tap: ' + levels.slice(-6));
+});
+
+test('the meter forgets a loud last recording within about a second', () => {
+  const runtime = createRuntime();
+  meterRun(runtime, Array(40).fill(20000));
+  const levels = meterRun(runtime, Array(15).fill(400));
+  assert.ok(levels[levels.length - 1] >= 90, 'adapted: ' + levels.slice(-4));
 });

@@ -35,6 +35,13 @@ var REGION_FALLBACKS = {
   'caribbean': { lat: 15.0, lon: -75.0 }
 };
 var DEFAULT_MODEL = 'moonshotai/kimi-k2.5';
+var DEFAULT_VOICE_MODEL = 'elevenlabs/scribe-v2';
+var VOICE_PROMPT_TEXT = '(Voice message)';
+var VOICE_PROMPT_MAX_AGE_MS = 2 * 60 * 1000;
+var VOICE_SAMPLE_RATE = 16000;
+var VOICE_MIN_SAMPLES = VOICE_SAMPLE_RATE / 4; // Ignore recordings shorter than 250 ms
+var VOICE_STOP_WAIT_MS = 3000; // How long to wait for audiostreamstop after the watch asks to transcribe
+var VOICE_TRANSCRIPT_CHARS = 500; // The watch stores at most 511 characters of a prompt
 var RESPONSE_CHUNK_CHARS = 600;
 var MAX_SEARCH_RESULTS = 3;
 var MAX_SCRAPE_CHARS = 4000;
@@ -405,6 +412,43 @@ function findClayItem(items, id) {
   return null;
 }
 
+function modelAcceptsAudio(modelInfo) {
+  return !!(modelInfo && modelInfo.input_modalities && modelInfo.input_modalities.indexOf('audio') !== -1);
+}
+
+// Send recordings straight to the chat model instead of transcribing them first. Only when the
+// user picked OpenRouter speech, left the toggle on, and the main model is known to accept audio.
+function voiceDirectEnabled() {
+  if (getSetting('VoiceInput', 'pebble') !== 'openrouter' || !getBoolSetting('VoiceDirect', true)) {
+    return false;
+  }
+  return modelAcceptsAudio(getCachedReasoningCapability(getSetting('OpenRouterModel', DEFAULT_MODEL), true));
+}
+
+var VOICE_DIRECT_TOGGLE = {
+  type: 'toggle',
+  label: 'Send voice straight to the model',
+  description: 'Your model can listen to audio, so it hears your recording itself and skips the speech model. Answers to choice prompts still use the speech model.'
+};
+
+function configureVoiceDirectSetting(model, modelInfo) {
+  var item = clay.config ? findClayItem(clay.config, 'voice-direct') : null;
+  if (!item) return;
+  if (modelAcceptsAudio(modelInfo)) {
+    item.type = VOICE_DIRECT_TOGGLE.type;
+    item.label = VOICE_DIRECT_TOGGLE.label;
+    item.description = VOICE_DIRECT_TOGGLE.description;
+    item.defaultValue = true;
+    clay.setSettings('VoiceDirect', getBoolSetting('VoiceDirect', true));
+  } else {
+    // Clay has no hidden items, so show why the toggle isn't there instead.
+    item.type = 'text';
+    delete item.label;
+    delete item.description;
+    item.defaultValue = model + " can't listen to audio, so recordings go to the speech model.";
+  }
+}
+
 function configureReasoningSetting(model, modelInfo) {
   var item = clay.config ? findClayItem(clay.config, 'reasoning-effort') : null;
   if (!item) return;
@@ -465,7 +509,7 @@ function configureProviderSetting(model, endpoints) {
 }
 
 function reasoningCapabilityCacheKey(model) {
-  return 'ReasoningCapability:' + normalizedModelId(model);
+  return 'ModelCapability:v2:' + normalizedModelId(model);
 }
 
 function getCachedReasoningCapability(model, allowStale) {
@@ -506,7 +550,8 @@ function fetchReasoningCapability(model, callback) {
           found = {
             id: models[i].id,
             reasoning: models[i].reasoning || null,
-            supported_parameters: models[i].supported_parameters || []
+            supported_parameters: models[i].supported_parameters || [],
+            input_modalities: (models[i].architecture && models[i].architecture.input_modalities) || []
           };
           break;
         }
@@ -517,7 +562,8 @@ function fetchReasoningCapability(model, callback) {
             found = {
               id: models[j].id,
               reasoning: models[j].reasoning || null,
-              supported_parameters: models[j].supported_parameters || []
+              supported_parameters: models[j].supported_parameters || [],
+              input_modalities: (models[j].architecture && models[j].architecture.input_modalities) || []
             };
             break;
           }
@@ -749,7 +795,9 @@ function sendToolStatesToWatch() {
       ';weather=' + (getBoolSetting('EnableWeather', true) ? '1' : '0') +
       ';choice=' + (getBoolSetting('EnableChoice', true) ? '1' : '0') +
       ';timeline=' + (getBoolSetting('EnableTimeline', true) ? '1' : '0') +
-      ';health=' + (getBoolSetting('EnableHealth', false) ? '1' : '0')
+      ';health=' + (getBoolSetting('EnableHealth', false) ? '1' : '0') +
+      ';voice=' + (getSetting('VoiceInput', 'pebble') === 'openrouter' ? '1' : '0') +
+      ';direct=' + (voiceDirectEnabled() ? '1' : '0')
   });
 }
 
@@ -1078,6 +1126,9 @@ function saveSettings(convertedSettings, rawSettings) {
   var firecrawlApiKey = settingValue(convertedSettings, rawSettings, 'FirecrawlApiKey', messageKeys.FirecrawlApiKey);
   var extraSystemPrompt = settingValue(convertedSettings, rawSettings, 'ExtraSystemPrompt', messageKeys.ExtraSystemPrompt);
   var notesMemoryText = settingValue(convertedSettings, rawSettings, 'NotesMemoryText', messageKeys.NotesMemoryText);
+  var voiceInput = settingValue(convertedSettings, rawSettings, 'VoiceInput', messageKeys.VoiceInput);
+  var voiceModel = settingValue(convertedSettings, rawSettings, 'VoiceModel', messageKeys.VoiceModel);
+  var voiceDirect = settingValue(convertedSettings, rawSettings, 'VoiceDirect', messageKeys.VoiceDirect);
   var sessionsText = settingValue(convertedSettings, rawSettings, 'OpenSessions', messageKeys.OpenSessions);
   var statsUsedCredits = settingValue(convertedSettings, rawSettings, 'StatsUsedCredits', messageKeys.StatsUsedCredits);
   var statsMessages = settingValue(convertedSettings, rawSettings, 'StatsMessages', messageKeys.StatsMessages);
@@ -1133,6 +1184,15 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (extraSystemPrompt !== undefined) {
     localStorage.setItem('ExtraSystemPrompt', String(extraSystemPrompt).trim());
+  }
+  if (voiceInput !== undefined) {
+    localStorage.setItem('VoiceInput', String(voiceInput) === 'openrouter' ? 'openrouter' : 'pebble');
+  }
+  if (voiceModel !== undefined) {
+    localStorage.setItem('VoiceModel', String(voiceModel).trim());
+  }
+  if (voiceDirect !== undefined) {
+    localStorage.setItem('VoiceDirect', String(voiceDirect ? 1 : 0));
   }
   if (notesMemoryText !== undefined) {
     saveNotesFromText(notesMemoryText);
@@ -2719,13 +2779,22 @@ function callOpenRouter(prompt, requestId) {
 
   var baseMessages = buildMessages(contextText);
   var userMessage = { role: 'user', content: prompt };
+  var voiceAudio = takePendingVoicePrompt(prompt);
+  var modelUserMessage = voiceAudio ? {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'The user sent this voice message. Listen to it and reply to what they said.' },
+      { type: 'input_audio', input_audio: { data: voiceAudio, format: 'wav' } }
+    ]
+  } : userMessage;
+  // History keeps the short placeholder; the audio is only sent for this turn.
   rememberConversationMessages([userMessage]);
   saveCurrentSessionToConversationHistory();
   runAssistantRound({
     prompt: prompt,
     requestId: currentRequestId,
     generation: generation,
-    messages: baseMessages.concat([userMessage]),
+    messages: baseMessages.concat([modelUserMessage]),
     tools: buildToolDefinitions(),
     toolCallCount: 0,
     toolRounds: 0,
@@ -2843,6 +2912,305 @@ function addTimelinePin(timeline, generation, executionId, callback) {
   });
 }
 
+// ---- Custom speech-to-text ----
+// The watch streams its microphone here (SDK 4.44 Microphone API). When the user presses SELECT
+// the watch sends VoiceEnd=1, and the recording is sent to an audio-capable OpenRouter model.
+var voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, waitTimer: null, request: null };
+
+function resetVoiceState() {
+  if (voiceState.waitTimer) {
+    clearTimeout(voiceState.waitTimer);
+  }
+  if (voiceState.request) {
+    try { voiceState.request.abort(); } catch (err) {}
+  }
+  voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, waitTimer: null, request: null };
+}
+
+function encodeWav(chunks, sampleCount, sampleRate) {
+  var dataBytes = sampleCount * 2;
+  var buffer = new ArrayBuffer(44 + dataBytes);
+  var view = new DataView(buffer);
+  function writeAscii(offset, text) {
+    for (var i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  }
+  writeAscii(0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeAscii(8, 'WAVE');
+  writeAscii(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, 'data');
+  view.setUint32(40, dataBytes, true);
+  var samples = new Int16Array(buffer, 44, sampleCount);
+  var offset = 0;
+  for (var c = 0; c < chunks.length; c++) {
+    samples.set(chunks[c], offset);
+    offset += chunks[c].length;
+  }
+  return new Uint8Array(buffer);
+}
+
+var BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function bytesToBase64(bytes) {
+  var parts = [];
+  var line = [];
+  var i;
+  for (i = 0; i + 2 < bytes.length; i += 3) {
+    var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    line.push(BASE64_ALPHABET[(n >> 18) & 63] + BASE64_ALPHABET[(n >> 12) & 63] +
+      BASE64_ALPHABET[(n >> 6) & 63] + BASE64_ALPHABET[n & 63]);
+    if (line.length >= 4096) {
+      parts.push(line.join(''));
+      line = [];
+    }
+  }
+  var rest = bytes.length - i;
+  if (rest === 1) {
+    var a = bytes[i] << 16;
+    line.push(BASE64_ALPHABET[(a >> 18) & 63] + BASE64_ALPHABET[(a >> 12) & 63] + '==');
+  } else if (rest === 2) {
+    var b = (bytes[i] << 16) | (bytes[i + 1] << 8);
+    line.push(BASE64_ALPHABET[(b >> 18) & 63] + BASE64_ALPHABET[(b >> 12) & 63] +
+      BASE64_ALPHABET[(b >> 6) & 63] + '=');
+  }
+  parts.push(line.join(''));
+  return parts.join('');
+}
+
+function cleanTranscript(text) {
+  var cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+  // Models sometimes wrap the transcript in quotes.
+  if (cleaned.length > 1 && /^["“].*["”]$/.test(cleaned)) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  if (/^\[?(no speech|silence|inaudible)\]?\.?$/i.test(cleaned)) {
+    return '';
+  }
+  return watchSafeText(clip(cleaned, VOICE_TRANSCRIPT_CHARS));
+}
+
+function sendVoiceFailure(message, detail) {
+  debugLog('Voice transcription failed: ' + (detail || message));
+  sendToWatch({ VoiceFailed: message });
+}
+
+var OPENROUTER_TRANSCRIPTION_URL = 'https://openrouter.ai/api/v1/audio/transcriptions';
+var pendingVoicePrompt = null;
+
+function transcribeVoice(audio, seconds) {
+  var apiKey = getSetting('OpenRouterApiKey', '');
+  if (!apiKey) {
+    sendVoiceFailure('Add OpenRouter key');
+    return;
+  }
+  var model = getSetting('VoiceModel', '') || DEFAULT_VOICE_MODEL;
+  debugLog('Voice transcribe model=' + model + ' seconds=' + seconds);
+
+  var request = new XMLHttpRequest();
+  voiceState.request = request;
+  request.open('POST', OPENROUTER_TRANSCRIPTION_URL, true);
+  request.setRequestHeader('Content-Type', 'application/json');
+  request.setRequestHeader('Authorization', 'Bearer ' + apiKey);
+  request.setRequestHeader('HTTP-Referer', 'https://repebble.com/');
+  request.setRequestHeader('X-Title', 'Pebble AI Chat');
+  request.timeout = 45000;
+
+  function isCurrent() {
+    return voiceState.request === request;
+  }
+
+  request.onload = function() {
+    if (!isCurrent()) return;
+    voiceState.request = null;
+    if (request.status < 200 || request.status >= 300) {
+      sendVoiceFailure('Transcribe failed (' + request.status + ')', clip(request.responseText, 500));
+      return;
+    }
+    try {
+      var json = JSON.parse(request.responseText);
+      addUsageStats(json.usage);
+      var transcript = cleanTranscript(json.text);
+      if (!transcript) {
+        sendVoiceFailure("Didn't catch that");
+        return;
+      }
+      sendToWatch({ VoiceTranscript: transcript });
+    } catch (err) {
+      sendVoiceFailure('Bad transcript', err.message);
+    }
+  };
+  request.onerror = function() {
+    if (!isCurrent()) return;
+    voiceState.request = null;
+    sendVoiceFailure('Check internet', 'Network error during transcription');
+  };
+  request.ontimeout = function() {
+    if (!isCurrent()) return;
+    voiceState.request = null;
+    sendVoiceFailure('Transcribe timed out');
+  };
+
+  request.send(JSON.stringify({ model: model, input_audio: { data: audio, format: 'wav' } }));
+}
+
+// The watch sends VOICE_PROMPT_TEXT as the prompt; swap in the recording for the model.
+function takePendingVoicePrompt(prompt) {
+  var pending = pendingVoicePrompt;
+  pendingVoicePrompt = null;
+  if (prompt !== VOICE_PROMPT_TEXT || !pending || Date.now() - pending.at > VOICE_PROMPT_MAX_AGE_MS) {
+    return null;
+  }
+  return pending.audio;
+}
+
+function finishVoiceIfReady() {
+  if (voiceState.decision === null || voiceState.streaming) {
+    return;
+  }
+  if (voiceState.waitTimer) {
+    clearTimeout(voiceState.waitTimer);
+    voiceState.waitTimer = null;
+  }
+  var chunks = voiceState.chunks;
+  var sampleCount = voiceState.sampleCount;
+  var decision = voiceState.decision;
+  voiceState.chunks = [];
+  voiceState.sampleCount = 0;
+  voiceState.decision = null;
+  if (!decision) {
+    return;
+  }
+  if (sampleCount < VOICE_MIN_SAMPLES) {
+    sendVoiceFailure("Didn't catch that", 'Recording too short: ' + sampleCount + ' samples');
+    return;
+  }
+  var audio = bytesToBase64(encodeWav(chunks, sampleCount, VOICE_SAMPLE_RATE));
+  var seconds = (sampleCount / VOICE_SAMPLE_RATE).toFixed(1);
+  if (decision === 'prompt' && voiceDirectEnabled()) {
+    debugLog('Voice direct to chat model seconds=' + seconds);
+    pendingVoicePrompt = { audio: audio, at: Date.now() };
+    sendToWatch({ VoiceTranscript: VOICE_PROMPT_TEXT });
+    return;
+  }
+  transcribeVoice(audio, seconds);
+}
+
+// decision: null = throw the recording away, 'prompt' = new message, 'choice' = choice answer.
+function handleVoiceEnd(decision) {
+  if (!decision) {
+    resetVoiceState();
+    return;
+  }
+  voiceState.decision = decision;
+  if (voiceState.streaming) {
+    // The last audio arrives before audiostreamstop. Don't wait forever if it never comes.
+    voiceState.waitTimer = setTimeout(function() {
+      voiceState.waitTimer = null;
+      voiceState.streaming = false;
+      finishVoiceIfReady();
+    }, VOICE_STOP_WAIT_MS);
+  }
+  finishVoiceIfReady();
+}
+
+Pebble.addEventListener('audiostreamstart', function(e) {
+  resetVoiceState();
+  voiceState.streaming = true;
+  pendingVoiceLevel = -1;
+  voiceLevelInFlight = false;
+  resetVoiceMeter();
+  debugLog('Voice stream start rate=' + (e && e.sampleRate) + ' format=' + (e && e.format));
+});
+
+var voiceLevelInFlight = false;
+var pendingVoiceLevel = -1; // Loudest level since the last send, or -1 when nothing is waiting
+
+// Meter auto gain. The bottom of the meter is fixed, so whatever the mic hears (wind, room noise)
+// still shows. The top follows the user's voice: it climbs a little per chunk, so one tap or knock
+// can't set it, and it sinks when things get quieter, fast at the start of a recording so last
+// time's level (a loud room yesterday) is forgotten quickly, then slowly.
+var METER_FLOOR_DB = 36;           // About RMS 60: below this the meter is empty
+var METER_MIN_SPAN_DB = 15;        // The top never gets closer than this to the floor
+var METER_DEFAULT_TOP_DB = 60;     // Normal speech at arm's length, before anything is learned
+var METER_CLIMB_DB = 3;            // Max rise per 100 ms chunk
+var METER_FAST_SINK_DB = 3;        // Per chunk during the first second and a half
+var METER_SLOW_SINK_DB = 0.3;      // Per chunk after that (about 3 dB a second)
+var METER_FAST_CHUNKS = 15;
+var METER_TOP_KEY = 'VoiceMeterTopDb';
+var meterTopDb = METER_DEFAULT_TOP_DB;
+var meterChunks = 0;
+
+function chunkDb(samples) {
+  var sum = 0;
+  for (var i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  var rms = Math.sqrt(sum / Math.max(1, samples.length));
+  return rms > 0 ? 20 * Math.log(rms) / Math.LN10 : 0;
+}
+
+function resetVoiceMeter() {
+  var saved = Number(localStorage.getItem(METER_TOP_KEY));
+  meterTopDb = saved > 0 ? saved : METER_DEFAULT_TOP_DB;
+  meterChunks = 0;
+}
+
+function saveVoiceMeter() {
+  if (meterChunks > 0) localStorage.setItem(METER_TOP_KEY, String(Math.round(meterTopDb * 10) / 10));
+}
+
+// Loudness of a chunk as 0-100 relative to the learned top.
+function voiceLevel(samples) {
+  var db = chunkDb(samples);
+  var minTop = METER_FLOOR_DB + METER_MIN_SPAN_DB;
+  if (db > meterTopDb) {
+    meterTopDb += Math.min(db - meterTopDb, METER_CLIMB_DB);
+  } else {
+    var sink = meterChunks < METER_FAST_CHUNKS ? METER_FAST_SINK_DB : METER_SLOW_SINK_DB;
+    meterTopDb = Math.max(meterTopDb - sink, db);
+  }
+  meterTopDb = Math.max(meterTopDb, minTop);
+  meterChunks++;
+  var level = (db - METER_FLOOR_DB) / (meterTopDb - METER_FLOOR_DB);
+  return Math.max(0, Math.min(100, Math.round(level * 100)));
+}
+
+// Meter updates for the recording screen. One message in flight at a time; while it is busy we keep
+// only the loudest level seen since, so short syllables still show and nothing queues up.
+function flushVoiceLevel() {
+  if (voiceLevelInFlight || pendingVoiceLevel < 0 || !voiceState.streaming) return;
+  var level = pendingVoiceLevel;
+  pendingVoiceLevel = -1;
+  voiceLevelInFlight = true;
+  var done = function() { voiceLevelInFlight = false; flushVoiceLevel(); };
+  Pebble.sendAppMessage({ VoiceLevel: level }, done, done);
+}
+
+function sendVoiceLevel(samples) {
+  pendingVoiceLevel = Math.max(pendingVoiceLevel, voiceLevel(samples));
+  flushVoiceLevel();
+}
+
+Pebble.addEventListener('audiostream', function(e) {
+  if (!e || !e.data) return;
+  var samples = new Int16Array(e.data);
+  voiceState.chunks.push(samples);
+  voiceState.sampleCount += samples.length;
+  sendVoiceLevel(samples);
+});
+
+Pebble.addEventListener('audiostreamstop', function() {
+  voiceState.streaming = false;
+  saveVoiceMeter();
+  debugLog('Voice stream stop samples=' + voiceState.sampleCount);
+  finishVoiceIfReady();
+});
+
 Pebble.addEventListener('ready', function() {
   console.log('PebbleKit JS ready');
   sendStatsToWatch();
@@ -2851,6 +3219,12 @@ Pebble.addEventListener('ready', function() {
 });
 
 Pebble.addEventListener('appmessage', function(e) {
+  if (e.payload && e.payload.VoiceEnd !== undefined) {
+    var voiceEnd = Number(e.payload.VoiceEnd);
+    handleVoiceEnd(voiceEnd === 1 ? 'prompt' : voiceEnd === 2 ? 'choice' : null);
+    return;
+  }
+
   if (e.payload && e.payload.RefreshStats) {
     sendStatsToWatch();
     refreshRemainingCredits();
@@ -2989,6 +3363,7 @@ Pebble.addEventListener('appmessage', function(e) {
 
 function openConfiguration(model, reasoningInfo, providerEndpoints) {
   configureReasoningSetting(model, reasoningInfo);
+  configureVoiceDirectSetting(model, reasoningInfo);
   configureProviderSetting(model, providerEndpoints);
   var stats = getMonthlyStats();
   clay.setSettings({
