@@ -92,6 +92,7 @@
       "VoiceModel",
       "VoiceDirect",
       "VoiceLevel",
+      "ResponseVibration",
       "EnablePlugins",
       "EnablePluginActions",
       "EnablePluginNotifications"

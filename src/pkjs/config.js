@@ -80,6 +80,28 @@ module.exports = [
     "items": [
       {
         "type": "heading",
+        "defaultValue": "Vibration"
+      },
+      {
+        "type": "select",
+        "messageKey": "ResponseVibration",
+        "defaultValue": "double",
+        "label": "When a response is done",
+        "options": [
+          { "label": "Off", "value": "off" },
+          { "label": "Short pulse", "value": "short" },
+          { "label": "Long pulse", "value": "long" },
+          { "label": "Double pulse", "value": "double" },
+          { "label": "Triple pulse", "value": "triple" }
+        ]
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "items": [
+      {
+        "type": "heading",
         "defaultValue": "Voice input"
       },
       {

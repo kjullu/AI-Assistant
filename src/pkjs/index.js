@@ -874,6 +874,13 @@ function sendStatsToWatch() {
   sendToWatch({ StatsText: buildStatsText() });
 }
 
+var RESPONSE_VIBRATIONS = ['off', 'short', 'long', 'double', 'triple'];
+
+function responseVibrationCode() {
+  var index = RESPONSE_VIBRATIONS.indexOf(getSetting('ResponseVibration', 'double'));
+  return String(index < 0 ? 3 : index);
+}
+
 function sendToolStatesToWatch() {
   sendToWatch({
     ToolStates: 'location=' + (getBoolSetting('EnableLocation', false) ? '1' : '0') +
@@ -886,6 +893,7 @@ function sendToolStatesToWatch() {
       ';choice=' + (getBoolSetting('EnableChoice', true) ? '1' : '0') +
       ';timeline=' + (getBoolSetting('EnableTimeline', true) ? '1' : '0') +
       ';health=' + (getBoolSetting('EnableHealth', false) ? '1' : '0') +
+      ';vibe=' + responseVibrationCode() +
       ';voice=' + (getSetting('VoiceInput', 'pebble') === 'openrouter' ? '1' : '0') +
       ';direct=' + (voiceDirectEnabled() ? '1' : '0')
   });
@@ -1223,6 +1231,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var voiceInput = settingValue(convertedSettings, rawSettings, 'VoiceInput', messageKeys.VoiceInput);
   var voiceModel = settingValue(convertedSettings, rawSettings, 'VoiceModel', messageKeys.VoiceModel);
   var voiceDirect = settingValue(convertedSettings, rawSettings, 'VoiceDirect', messageKeys.VoiceDirect);
+  var responseVibration = settingValue(convertedSettings, rawSettings, 'ResponseVibration', messageKeys.ResponseVibration);
   var sessionsText = settingValue(convertedSettings, rawSettings, 'OpenSessions', messageKeys.OpenSessions);
   var statsUsedCredits = settingValue(convertedSettings, rawSettings, 'StatsUsedCredits', messageKeys.StatsUsedCredits);
   var statsMessages = settingValue(convertedSettings, rawSettings, 'StatsMessages', messageKeys.StatsMessages);
@@ -1299,6 +1308,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (voiceDirect !== undefined) {
     localStorage.setItem('VoiceDirect', String(voiceDirect ? 1 : 0));
+  }
+  if (responseVibration !== undefined && RESPONSE_VIBRATIONS.indexOf(String(responseVibration)) >= 0) {
+    localStorage.setItem('ResponseVibration', String(responseVibration));
   }
   if (notesMemoryText !== undefined) {
     saveNotesFromText(notesMemoryText);
