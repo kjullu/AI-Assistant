@@ -2,7 +2,7 @@
 
 Ask an AI model a question by speaking into your Pebble, then read the answer on your wrist as it streams in. The phone side of the app sends your prompt to a model of your choice through [OpenRouter](https://openrouter.ai).
 
-The model can also use tools: it can search the web, find nearby places and driving directions with OpenStreetMap, check the weather, do unit and currency conversions, add pins to your Pebble timeline, read your Health data, or ask you to pick between options on the watch. You choose which tools are turned on.
+The model can also use tools: it can search the web, find nearby places and get walking, cycling, or driving directions with OpenStreetMap, check the weather, do unit and currency conversions, add pins to your Pebble timeline, read your Health data, or ask you to pick between options on the watch. You choose which tools are turned on.
 
 ![A conversation on a Pebble Time 2: the user says "Please say something smart." and the AI replies.](<images/store images/Emery - Pebble Time 2/pebble_screenshot2.png>)
 
@@ -41,7 +41,7 @@ The home screen shows your remaining OpenRouter credit and how many messages and
 | Choice | On | Lets the model give you options to pick from on the watch |
 | Timeline | On | Adds reminders and events to your Pebble timeline |
 | Location | Off | Gives the model your phone's coordinates and a rough place name |
-| OpenStreetMap | Off | Finds nearby places (with opening hours when listed) and driving directions; uses phone GPS but does not turn on Location |
+| OpenStreetMap | Off | Finds nearby places (with opening hours when listed) and directions (walking by default, or cycling or driving); uses phone GPS but does not turn on Location |
 | Health | Off | Reads steps, sleep, heart rate, and similar data from Pebble Health |
 | Brave Search | Off | Web search, needs a Brave Search API key |
 | Firecrawl Scrape | Off | Reads web pages, needs a Firecrawl API key; phone settings only |
@@ -53,7 +53,7 @@ The phone settings also let you pick a provider and routing priority, set reason
 Your prompts, recent conversation, memory notes, extra system prompt, and tool results go to OpenRouter and the model you picked. Enabled tools also send data to other services:
 
 - Location: coordinates go to Nominatim to look up a place name.
-- OpenStreetMap: your coordinates and the place you ask for go to Nominatim; route start and end points go to the public OSRM server. Map data can be incomplete or out of date.
+- OpenStreetMap: your coordinates and the place you ask for go to Nominatim; route start and end points go to the FOSSGIS OSRM server (routing.openstreetmap.de). Map data can be incomplete or out of date.
 - Brave Search: search queries go to Brave.
 - Firecrawl Scrape: page URLs go to Firecrawl.
 - Weather: place names and coordinates go to Open-Meteo.

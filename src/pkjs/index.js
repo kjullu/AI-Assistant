@@ -13,7 +13,12 @@ var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 var NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
-var OSRM_ROUTE_URL = 'https://router.project-osrm.org/route/v1/driving/';
+var OSRM_ROUTE_BASE_URL = 'https://routing.openstreetmap.de/';
+var DIRECTION_MODES = {
+  walking: { profile: 'routed-foot', label: 'Walking', noun: 'walking', way: 'a walkable path or road' },
+  cycling: { profile: 'routed-bike', label: 'Cycling', noun: 'cycling', way: 'a bikeable path or road' },
+  driving: { profile: 'routed-car', label: 'Driving', noun: 'driving', way: 'a drivable road' }
+};
 var TIMELINE_URL = 'https://timeline-api.getpebble.com/v1/user/pins/';
 var FRANKFURTER_RATE_URL = 'https://api.frankfurter.dev/v2/rate/';
 
@@ -1183,7 +1188,7 @@ function buildSystemPrompt() {
     lines.push('Use Location for "where am I" requests.');
   }
   if (openStreetMapAvailable) {
-    lines.push('Use the OpenStreetMap tool to find stores, services, restaurants, or other places near the user, and to get driving directions. Opening hours may be missing or stale, so describe them as listed hours rather than guaranteed hours. For directions to a nearby result, pass its latitude and longitude back to the OpenStreetMap tool with action "directions". Only set an origin when the user explicitly names or supplies one. For the current location, current position, where the user is, or here, omit all origin fields so the tool uses phone GPS. Never invent an origin.');
+    lines.push('Use the OpenStreetMap tool to find stores, services, restaurants, or other places near the user, and to get walking, cycling, or driving directions. Directions default to walking; set mode to cycling or driving only when the user asks to bike or drive. Opening hours may be missing or stale, so describe them as listed hours rather than guaranteed hours. For directions to a nearby result, pass its latitude and longitude back to the OpenStreetMap tool with action "directions". Only set an origin when the user explicitly names or supplies one. For the current location, current position, where the user is, or here, omit all origin fields so the tool uses phone GPS. Never invent an origin.');
   }
 
   if (choiceAvailable) {
@@ -1246,10 +1251,11 @@ function buildToolDefinitions() {
     tools.push(functionTool('location', 'Get the user location from the phone GPS.', {}, []));
   }
   if (getBoolSetting('EnableOpenStreetMap', false)) {
-    tools.push(functionTool('openstreetmap', 'Find nearby places or get driving directions using phone GPS and OpenStreetMap data.', {
+    tools.push(functionTool('openstreetmap', 'Find nearby places or get walking, cycling, or driving directions using phone GPS and OpenStreetMap data.', {
       action: { type: 'string', enum: ['nearby_places', 'directions'], description: 'Use nearby_places to search, or directions to route.' },
       query: { type: 'string', description: 'For nearby_places: a place name or type, such as supermarket, pharmacy, coffee, or Netto.' },
       radiusMeters: { type: 'number', description: 'For nearby_places: search radius from 100 to 10000 meters. Defaults to 3000.' },
+      mode: { type: 'string', enum: ['walking', 'cycling', 'driving'], description: 'For directions: travel mode. Defaults to walking; use cycling or driving only when the user asks for it.' },
       destination: { type: 'string', description: 'For directions: destination name, address, or result label.' },
       destinationLatitude: { type: 'number', description: 'For directions: latitude from a nearby_places result.' },
       destinationLongitude: { type: 'number', description: 'For directions: longitude from a nearby_places result.' },
@@ -2010,7 +2016,7 @@ function routeStepText(step) {
   return instruction;
 }
 
-function formatDirections(destination, destinationLabel, originLabel, json) {
+function formatDirections(mode, destination, destinationLabel, originLabel, json) {
   if (!json || json.code !== 'Ok' || !json.routes || !json.routes.length) {
     return null;
   }
@@ -2018,7 +2024,7 @@ function formatDirections(destination, destinationLabel, originLabel, json) {
   if (typeof route.distance !== 'number' || typeof route.duration !== 'number' ||
       !isFinite(route.distance) || !isFinite(route.duration)) return null;
   var steps = route.legs && route.legs[0] && route.legs[0].steps || [];
-  var lines = ['Driving directions to ' + destination + ': ' + routeDistanceText(route.distance) +
+  var lines = [mode.label + ' directions to ' + destination + ': ' + routeDistanceText(route.distance) +
     ', about ' + Math.max(1, Math.round(route.duration / 60)) + ' min.'];
   lines.push('Starting point: ' + originLabel + '.');
   if (destinationLabel && destinationLabel !== destination) lines.push('Destination: ' + destinationLabel + '.');
@@ -2030,11 +2036,11 @@ function formatDirections(destination, destinationLabel, originLabel, json) {
   return lines.join('\n');
 }
 
-function requestDrivingRoute(startLat, startLon, originLabel, destination, destinationLabel, endLat, endLon, generation, callback) {
+function requestRoute(mode, startLat, startLon, originLabel, destination, destinationLabel, endLat, endLon, generation, callback) {
   var request = new XMLHttpRequest();
   trackRequest(request, generation);
   var coordinates = startLon + ',' + startLat + ';' + endLon + ',' + endLat;
-  request.open('GET', OSRM_ROUTE_URL + coordinates + '?steps=true&overview=false', true);
+  request.open('GET', OSRM_ROUTE_BASE_URL + mode.profile + '/route/v1/driving/' + coordinates + '?steps=true&overview=false', true);
   request.setRequestHeader('Accept', 'application/json');
   request.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
   request.timeout = 20000;
@@ -2051,21 +2057,21 @@ function requestDrivingRoute(startLat, startLon, originLabel, destination, desti
       return;
     }
     if (response && response.code === 'NoRoute') {
-      callback(null, 'No driving route found to ' + destination + '.');
+      callback(null, 'No ' + mode.noun + ' route found to ' + destination + '.');
       return;
     }
     if (response && response.code === 'NoSegment') {
-      callback(null, 'The starting point or destination is not near a drivable road.');
+      callback(null, 'The starting point or destination is not near ' + mode.way + '.');
       return;
     }
     if (request.status < 200 || request.status >= 300) {
       callback(null, 'Directions lookup failed (' + request.status + ').');
       return;
     }
-    var result = formatDirections(destination, destinationLabel, originLabel, response);
+    var result = formatDirections(mode, destination, destinationLabel, originLabel, response);
     callback(result, result ? null : (response && response.code === 'Ok' ?
       'The directions service returned an incomplete response.' :
-      'No driving route found to ' + destination + '.'));
+      'No ' + mode.noun + ' route found to ' + destination + '.'));
   };
   request.onerror = function() {
     untrackRequest(request);
@@ -2108,6 +2114,12 @@ function runDirectionsTool(args, generation, callback) {
     callback(null, 'No directions destination provided.');
     return;
   }
+  var modeName = String(args.mode || 'walking').replace(/^\s+|\s+$/g, '').toLowerCase() || 'walking';
+  var mode = Object.prototype.hasOwnProperty.call(DIRECTION_MODES, modeName) ? DIRECTION_MODES[modeName] : null;
+  if (!mode) {
+    callback(null, 'Directions mode must be walking, cycling, or driving.');
+    return;
+  }
   var origin = String(args.origin || '').replace(/^\s+|\s+$/g, '');
   if (originMeansCurrentLocation(origin)) origin = '';
   var hasOriginLat = coordinateProvided(args.originLatitude);
@@ -2146,7 +2158,7 @@ function runDirectionsTool(args, generation, callback) {
   function continueFromOrigin(startLat, startLon, originLabel) {
     if (generation !== requestGeneration) return;
     if (hasDestinationLat && hasDestinationLon) {
-      requestDrivingRoute(startLat, startLon, originLabel, destination, destination, endLat, endLon, generation, callback);
+      requestRoute(mode, startLat, startLon, originLabel, destination, destination, endLat, endLon, generation, callback);
       return;
     }
 
@@ -2197,7 +2209,7 @@ function runDirectionsTool(args, generation, callback) {
         return;
       }
       var destinationLabel = String(selected.place.display_name || destination).replace(/^\s+|\s+$/g, '') || destination;
-      requestDrivingRoute(startLat, startLon, originLabel, destination, destinationLabel,
+      requestRoute(mode, startLat, startLon, originLabel, destination, destinationLabel,
         selected.lat, selected.lon, generation, callback);
     };
     search.onerror = function() {

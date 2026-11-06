@@ -438,7 +438,9 @@ test('OpenStreetMap setting exposes one tool with nearby and directions actions'
   assert.equal(mapTool.function.parameters.properties.originLatitude.type, 'number');
   assert.equal(runtime.context.buildToolDefinitions().some(tool => tool.function.name === 'location'), false);
   assert.match(runtime.context.buildSystemPrompt(), /Opening hours may be missing or stale/);
-  assert.match(runtime.context.buildSystemPrompt(), /driving directions/);
+  assert.match(runtime.context.buildSystemPrompt(), /walking, cycling, or driving directions/);
+  assert.match(runtime.context.buildSystemPrompt(), /default to walking/);
+  assert.deepEqual(Array.from(mapTool.function.parameters.properties.mode.enum), ['walking', 'cycling', 'driving']);
 });
 
 test('Location does not enable the OpenStreetMap tool', () => {
@@ -703,7 +705,8 @@ test('directions routes from GPS to coordinates supplied by a nearby result', ()
   }, runtime.context.requestGeneration, (content, problem) => { result = content; error = problem; });
 
   assert.equal(runtime.requests.some(request => request.url && request.url.includes('nominatim.openstreetmap.org/search')), false);
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
+  assert.match(route.url, /routing\.openstreetmap\.de\/routed-foot\/route\/v1\/driving\//);
   assert.match(route.url, /12\.5683,55\.6761;12\.575,55\.68/);
   assert.match(route.url, /steps=true&overview=false/);
   route.status = 200;
@@ -722,7 +725,7 @@ test('directions routes from GPS to coordinates supplied by a nearby result', ()
   route.onload();
 
   assert.equal(error, null);
-  assert.match(result, /Driving directions to Burger King: 1\.2 km, about 8 min/);
+  assert.match(result, /Walking directions to Burger King: 1\.2 km, about 8 min/);
   assert.match(result, /Starting point: phone GPS/);
   assert.match(result, /Head north on Main Street for 400 m/);
   assert.match(result, /Turn right onto King Road for 800 m/);
@@ -749,7 +752,7 @@ test('directions resolves a named destination near the current location before r
   ]);
   search.onload();
 
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   assert.match(route.url, /12\.58,55\.69/);
   route.status = 200;
   route.responseText = JSON.stringify({
@@ -823,7 +826,7 @@ test('directions accepts zero as a real coordinate', () => {
     destinationLongitude: 1
   }, runtime.context.requestGeneration, () => {});
 
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   assert.match(route.url, /\/0,0;1,0\?/);
 });
 
@@ -843,7 +846,7 @@ test('directions treats current-location origin aliases as phone GPS', () => {
     }, runtime.context.requestGeneration, () => {});
 
     assert.equal(runtime.requests.some(request => request.url && request.url.includes('nominatim.openstreetmap.org/search')), false);
-    const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+    const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
     assert.match(route.url, /12\.5683,55\.6761;12\.575,55\.68/);
   });
 });
@@ -871,7 +874,7 @@ test('directions geocodes an explicit named origin without using phone GPS', () 
   }]);
   originSearch.onload();
 
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   assert.match(route.url, /12\.5648,55\.6727;12\.57,55\.675/);
   route.status = 200;
   route.responseText = JSON.stringify({
@@ -898,7 +901,7 @@ test('directions rejects invalid coordinates returned for a named origin', () =>
   originSearch.onload();
 
   assert.match(error, /invalid coordinates/);
-  assert.equal(runtime.requests.some(request => request.url && request.url.includes('router.project-osrm.org')), false);
+  assert.equal(runtime.requests.some(request => request.url && request.url.includes('routing.openstreetmap.de')), false);
 });
 
 test('directions rejects invalid coordinates returned for a named destination', () => {
@@ -918,7 +921,7 @@ test('directions rejects invalid coordinates returned for a named destination', 
   search.onload();
 
   assert.match(error, /invalid coordinates for the destination/);
-  assert.equal(runtime.requests.some(request => request.url && request.url.includes('router.project-osrm.org')), false);
+  assert.equal(runtime.requests.some(request => request.url && request.url.includes('routing.openstreetmap.de')), false);
 });
 
 test('directions reports OSRM no-route responses clearly even with HTTP 400', () => {
@@ -931,11 +934,12 @@ test('directions reports OSRM no-route responses clearly even with HTTP 400', ()
   let error;
   runtime.context.runDirectionsTool({
     destination: 'Unreachable place',
+    mode: 'driving',
     destinationLatitude: 55.68,
     destinationLongitude: 12.575
   }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
 
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   route.status = 400;
   route.responseText = JSON.stringify({ code: 'NoRoute', message: 'Impossible route' });
   route.onload();
@@ -957,12 +961,12 @@ test('directions distinguishes an OSRM endpoint that is not near a road', () => 
     destinationLongitude: 12.575
   }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
 
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   route.status = 400;
   route.responseText = JSON.stringify({ code: 'NoSegment' });
   route.onload();
 
-  assert.match(error, /near a drivable road/);
+  assert.match(error, /near a walkable path or road/);
 });
 
 test('directions rejects incomplete successful OSRM responses', () => {
@@ -979,7 +983,7 @@ test('directions rejects incomplete successful OSRM responses', () => {
     destinationLongitude: 12.575
   }, runtime.context.requestGeneration, (content, problem) => { error = problem; });
 
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   route.status = 200;
   route.responseText = JSON.stringify({ code: 'Ok', routes: [{ legs: [{ steps: [] }] }] });
   route.onload();
@@ -1003,7 +1007,7 @@ test('directions accepts explicit origin coordinates without GPS or origin geoco
   }, runtime.context.requestGeneration, content => { result = content; });
 
   assert.equal(runtime.requests.some(request => request.url && request.url.includes('nominatim.openstreetmap.org/search')), false);
-  const route = runtime.requests.find(request => request.url && request.url.includes('router.project-osrm.org'));
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
   assert.match(route.url, /12\.5648,55\.6727;12\.57,55\.675/);
   route.status = 200;
   route.responseText = JSON.stringify({
@@ -1533,4 +1537,34 @@ test('AppMessage retries stop after three failures and unblock the queue', () =>
 
   assert.equal(sends.length, 4);
   assert.equal(sends[3].dict.Status, 'Second');
+});
+
+test('directions use the FOSSGIS profile for the requested travel mode', () => {
+  for (const [mode, profile, label] of [['cycling', 'routed-bike', 'Cycling'], ['driving', 'routed-car', 'Driving'], [' Walking ', 'routed-foot', 'Walking']]) {
+    const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+    let result;
+    runtime.context.runDirectionsTool({
+      destination: 'Park', mode,
+      originLatitude: 55.6761, originLongitude: 12.5683,
+      destinationLatitude: 55.68, destinationLongitude: 12.575
+    }, runtime.context.requestGeneration, content => { result = content; });
+    const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
+    assert.match(route.url, new RegExp('/' + profile + '/route/v1/driving/'));
+    route.status = 200;
+    route.responseText = JSON.stringify({ code: 'Ok', routes: [{ distance: 500, duration: 300, legs: [{ steps: [] }] }] });
+    route.onload();
+    assert.match(result, new RegExp('^' + label + ' directions to Park'));
+  }
+});
+
+test('directions reject an unknown travel mode before GPS or network access', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  let gpsUsed = false;
+  runtime.context.navigator.geolocation = { getCurrentPosition() { gpsUsed = true; } };
+  let error;
+  runtime.context.runDirectionsTool({ destination: 'Park', mode: 'transit' },
+    runtime.context.requestGeneration, (content, problem) => { error = problem; });
+  assert.equal(error, 'Directions mode must be walking, cycling, or driving.');
+  assert.equal(gpsUsed, false);
+  assert.equal(runtime.requests.length, 0);
 });
