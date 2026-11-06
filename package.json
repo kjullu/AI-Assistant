@@ -1,7 +1,7 @@
 {
   "name": "pebble-assistant",
   "author": "Kjullu, GPT-5.6 Sol",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "keywords": [
     "Ai-chat-app"
   ],
@@ -84,10 +84,38 @@
       "OpenRouterSort",
       "ToolActivity",
       "ResetFirstRunNotice",
-      "ReplayPrompt"
+      "ReplayPrompt",
+      "VoiceEnd",
+      "VoiceTranscript",
+      "VoiceFailed",
+      "VoiceInput",
+      "VoiceModel",
+      "VoiceDirect",
+      "VoiceLevel"
     ],
     "resources": {
       "media": []
-    }
+    },
+    "usesPermissions": [
+      "WatchMicrophone",
+      "Location",
+      "Timeline",
+      "Health",
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "openrouter.ai",
+            "api.search.brave.com",
+            "api.firecrawl.dev",
+            "open-meteo.com",
+            "nominatim.openstreetmap.org",
+            "routing.openstreetmap.de",
+            "timeline-api.getpebble.com",
+            "api.frankfurter.dev"
+          ]
+        }
+      }
+    ]
   }
 }
