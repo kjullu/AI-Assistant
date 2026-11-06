@@ -1684,15 +1684,11 @@ function parseTimeframe(timeframe) {
 }
 
 function normalizeWeatherUnits(value) {
-  return value === 'metric' || value === 'imperial' ? value : 'automatic';
+  return value === 'imperial' ? 'imperial' : 'metric';
 }
 
 function weatherUnitSettings() {
-  var setting = normalizeWeatherUnits(getSetting('WeatherUnits', 'automatic'));
-  var language = typeof navigator !== 'undefined' ? String(navigator.language || '') : '';
-  // Skip the language/script subtags; only a region subtag selects imperial.
-  var region = language.replace(/_/g, '-').match(/^[a-z]{2,3}(?:-[a-z]{4})?-([a-z]{2}|[0-9]{3})(?:-|$)/i);
-  var imperial = setting === 'imperial' || (setting === 'automatic' && region && /^(US|LR|MM)$/i.test(region[1]));
+  var imperial = normalizeWeatherUnits(getSetting('WeatherUnits', 'metric')) === 'imperial';
   return imperial ? { temperature: 'fahrenheit', wind: 'mph', precipitation: 'inch', temperatureLabel: '°F', windLabel: 'mph' } :
     { temperature: 'celsius', wind: 'kmh', precipitation: 'mm', temperatureLabel: '°C', windLabel: 'km/h' };
 }
@@ -3989,7 +3985,7 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     EnableSearch: getBoolSetting('EnableSearch', false),
     EnableScrape: getBoolSetting('EnableScrape', false),
     EnableWeather: getBoolSetting('EnableWeather', true),
-    WeatherUnits: normalizeWeatherUnits(getSetting('WeatherUnits', 'automatic')),
+    WeatherUnits: normalizeWeatherUnits(getSetting('WeatherUnits', 'metric')),
     EnableChoice: getBoolSetting('EnableChoice', true),
     EnableTimeline: getBoolSetting('EnableTimeline', true),
     EnableHealth: getBoolSetting('EnableHealth', false),
