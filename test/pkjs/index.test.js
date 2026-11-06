@@ -1600,10 +1600,10 @@ test('AppMessage retries stop after three failures and unblock the queue', () =>
   assert.equal(sends[3].dict.Status, 'Second');
 });
 
-test('changing the current time preserves the complete instruction and history prefix', () => {
+test('changing the clock does not regenerate timestamps in existing history', () => {
   const runtime = createRuntime({ ExtraSystemPrompt: 'Answer in Danish.' });
   const history = [
-    { role: 'user', content: 'What is 6 times 7?' },
+    { role: 'user', content: 'What is 6 times 7?', localTime: 'Current local time is the original turn time.' },
     { role: 'assistant', content: null, tool_calls: [{ id: 'calc', type: 'function', function: { name: 'calculator', arguments: '{"expression":"6*7"}' } }] },
     { role: 'tool', tool_call_id: 'calc', content: '42' },
     { role: 'assistant', content: '42' }
@@ -1618,10 +1618,10 @@ test('changing the current time preserves the complete instruction and history p
     constructor() { super('2026-10-17T08:01:00Z'); }
   };
   const second = JSON.parse(JSON.stringify(runtime.context.buildMessages()));
-  assert.deepEqual(first.slice(0, -1), second.slice(0, -1));
-  assert.notEqual(first.at(-1).content, second.at(-1).content);
-  assert.match(second.at(-1).content, /^Current local time is /);
-  assert.deepEqual(second.slice(-5, -1), history);
+  assert.deepEqual(first, second);
+  assert.equal(second.at(-5).content, history[0].localTime);
+  assert.deepEqual(second.slice(-4), history.map(({ localTime, ...message }) => message));
+  assert.ok(second.every(message => !('localTime' in message)));
   assert.ok(second.some(message => message.content === 'Answer in Danish.'));
 });
 
@@ -1640,30 +1640,22 @@ test('outgoing requests keep time directly before the new question and omit avai
   assert.match(payload.messages[0].content, /untrusted data/);
 });
 
-test('consecutive turns reuse older history ahead of the current timestamp', () => {
+test('consecutive turns retain the complete previous request and response prefix', () => {
   const runtime = createRuntime();
   prompt(runtime, 'First question', 1);
   const first = JSON.parse(modelRequests(runtime)[0].body).messages;
   streamResponse(modelRequests(runtime)[0], { reply: 'First answer' });
   prompt(runtime, 'Second question', 2);
   const second = JSON.parse(modelRequests(runtime)[1].body).messages;
+  assert.deepEqual(second.slice(0, first.length), first);
+  assert.deepEqual(second[first.length], { role: 'assistant', content: 'First answer' });
   streamResponse(modelRequests(runtime)[1], { reply: 'Second answer' });
   prompt(runtime, 'Third question', 3);
   const third = JSON.parse(modelRequests(runtime)[2].body).messages;
-
-  const stableLength = first.length - 2;
-  assert.deepEqual(second.slice(0, stableLength), first.slice(0, stableLength));
-  assert.deepEqual(second.slice(stableLength, -2), [
-    { role: 'user', content: 'First question' },
-    { role: 'assistant', content: 'First answer' }
-  ]);
-  assert.deepEqual(third.slice(0, second.length - 2), second.slice(0, -2));
-  assert.deepEqual(third.slice(-4, -2), [
-    { role: 'user', content: 'Second question' },
-    { role: 'assistant', content: 'Second answer' }
-  ]);
-  assert.match(third.at(-2).content, /^Current local time is /);
-  assert.equal(third.filter(message => /^Current local time is /.test(message.content || '')).length, 1);
+  assert.deepEqual(third.slice(0, second.length), second);
+  assert.deepEqual(third[second.length], { role: 'assistant', content: 'Second answer' });
+  assert.equal(third.filter(message => /^Current local time is /.test(message.content || '')).length, 3);
+  assert.ok(third.every(message => !('localTime' in message)));
 });
 
 test('tool rounds preserve the full request prefix and its timestamp', () => {
@@ -1676,6 +1668,12 @@ test('tool rounds preserve the full request prefix and its timestamp', () => {
   assert.equal(second.filter(message => /^Current local time is /.test(message.content || '')).length, 1);
   assert.equal(second.at(-1).role, 'tool');
   assert.match(second.at(-1).content, /42/);
+  streamResponse(modelRequests(runtime)[1], { reply: '42' });
+  prompt(runtime, 'Now multiply that by two', 2);
+  const nextTurn = JSON.parse(modelRequests(runtime)[2].body).messages;
+  assert.deepEqual(nextTurn.slice(0, second.length), second);
+  assert.deepEqual(nextTurn[second.length], { role: 'assistant', content: '42' });
+  assert.equal(nextTurn.filter(message => /^Current local time is /.test(message.content || '')).length, 2);
 });
 
 test('directions use the FOSSGIS profile for the requested travel mode', () => {
@@ -1977,4 +1975,24 @@ test('the meter forgets a loud last recording within about a second', () => {
   meterRun(runtime, Array(40).fill(20000));
   const levels = meterRun(runtime, Array(15).fill(400));
   assert.ok(levels[levels.length - 1] >= 90, 'adapted: ' + levels.slice(-4));
+});
+
+
+test('trimming history keeps each retained user timestamp and the existing message budget', () => {
+  const runtime = createRuntime();
+  for (let i = 0; i < 15; i++) {
+    prompt(runtime, 'Question ' + i, i + 1);
+    streamResponse(modelRequests(runtime).at(-1), { reply: 'Answer ' + i });
+  }
+  const history = runtime.context.conversationHistory;
+  assert.equal(history.length, runtime.context.MAX_HISTORY_MESSAGES);
+  assert.equal(history[0].role, 'user');
+  const messages = JSON.parse(JSON.stringify(runtime.context.buildMessages()));
+  for (const entry of history.filter(message => message.role === 'user')) {
+    const index = messages.findIndex(message => message.role === 'user' && message.content === entry.content);
+    assert.ok(index > 0);
+    assert.deepEqual(messages[index - 1], { role: 'system', content: entry.localTime });
+  }
+  const sessions = runtime.context.sessionsToText();
+  assert.doesNotMatch(sessions, /Current local time is/);
 });
