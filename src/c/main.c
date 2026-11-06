@@ -1,5 +1,6 @@
 #include <pebble.h>
 #include <ctype.h>
+#include "utf8_text.h"
 
 //AI: Small spacing values used to lay out the Bobby-like stacked chat view.
 #define PADDING 5
@@ -14,6 +15,8 @@
 #define DIVIDER_GAP 6
 #define SETTINGS_SCROLL_MARGIN 10
 #define HOME_STATS_GAP 5
+#define HOME_TITLE "AI Assistant"
+#define HOME_HINT "SELECT speak  UP tools\nDOWN sessions"
 
 #ifdef PBL_COLOR
 #define ACCENT_AI     GColorCobaltBlue
@@ -37,6 +40,15 @@
 #define STATS_BUFFER_SIZE 512
 #define TOOL_HISTORY_PREFIX "[tool] "
 #define PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED 1001
+#define PERSIST_KEY_VOICE_OPENROUTER 1002
+// Stop a custom voice recording automatically after this long.
+#define VOICE_MAX_RECORD_MS 60000
+
+// The Microphone API (SDK 4.44) only works on emery, flint and gabbro. basalt, chalk and diorite
+// also define PBL_MICROPHONE, but only for dictation, and they define PBL_SDK_FROZEN.
+#if defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
+#define HAS_MIC_STREAM 1
+#endif
 
 // Pointers to Pebble UI/session objects created at runtime.
 static Window *s_window;
@@ -86,6 +98,7 @@ static int s_new_session_selection;
 static bool s_settings_return_home;
 static int s_settings_selection;
 static bool s_location_enabled;
+static bool s_openstreetmap_enabled;
 static bool s_memory_enabled = true;
 static bool s_calculator_enabled = true;
 static bool s_search_enabled;
@@ -109,6 +122,38 @@ static int16_t s_choice_scroll_offset;
 static char s_choice_answer_buffer[MAX_CHOICE_TEXT + 8];
 static bool s_choice_waiting_dictation;
 static Layer *s_choice_layer;
+
+// Custom speech-to-text: stream the microphone to PebbleKit JS, which transcribes it through
+// OpenRouter and sends the text back. Falls back to Pebble dictation when it isn't available.
+static bool s_voice_openrouter;
+static bool s_voice_listening;
+static bool s_voice_transcribing;
+#ifdef HAS_MIC_STREAM
+static bool s_voice_for_choice;
+// The full-screen recording UI drawn on top of the app while the mic is in use.
+typedef enum { VoiceUiHidden, VoiceUiRecording, VoiceUiWorking, VoiceUiFailed } VoiceUi;
+#define VOICE_METER_BARS 7
+static VoiceUi s_voice_ui;
+static Layer *s_voice_layer;
+static bool s_voice_direct;
+static bool s_voice_stream_started;
+static AppTimer *s_voice_timer;
+static AppTimer *s_voice_tick_timer;
+static time_t s_voice_started_at;
+static uint8_t s_voice_level;
+static char s_voice_failure[48];
+static void set_voice_ui(VoiceUi ui);
+static void show_voice_failure(const char *message);
+#endif
+static void start_voice_input(bool for_choice);
+#ifdef HAS_MIC_STREAM
+#define VOICE_PHONE_WAIT_MS 6000
+static bool s_phone_ready;            // PebbleKit JS has sent ToolStates since launch
+static bool s_voice_waiting_for_phone;
+static bool s_voice_waiting_for_choice;
+static AppTimer *s_voice_phone_wait_timer;
+#endif
+static void handle_voice_transcript(const char *transcript, bool for_choice);
 
 static void update_display(const char *status);
 static void clear_watch_session(void);
@@ -206,8 +251,8 @@ static void draw_toggle_switch(GContext *ctx, int16_t x, int16_t y, bool on, boo
       knob_fill = GColorWhite;
     } else {
       track_fill = GColorWhite;
-      track_stroke = COLOR_DIM;
-      knob_fill = COLOR_DIM;
+      track_stroke = PBL_IF_COLOR_ELSE(COLOR_DIM, GColorBlack);
+      knob_fill = PBL_IF_COLOR_ELSE(COLOR_DIM, GColorBlack);
     }
   }
 
@@ -293,6 +338,13 @@ static void markdown_draw_piece(MarkdownLayout *layout, const char *piece, GFont
   if (layout->x != layout->left && layout->x + piece_width > layout->right) {
     markdown_next_line(layout);
   }
+  // Smaller inline-code text is pushed down so it shares the body text baseline.
+  int16_t baseline_offset = 0;
+  int16_t body_height = font_line_height(layout->body_font);
+  if (piece_height < body_height) {
+    baseline_offset = body_height - piece_height;
+    piece_height = body_height;
+  }
   if (piece_height > layout->line_height) {
     layout->line_height = piece_height;
   }
@@ -303,7 +355,8 @@ static void markdown_draw_piece(MarkdownLayout *layout, const char *piece, GFont
       draw_width = layout->right - layout->x;
     }
     graphics_draw_text(layout->ctx, piece, font,
-                       GRect(layout->x, layout->y, draw_width, piece_height + 2),
+                       GRect(layout->x, layout->y + baseline_offset, draw_width,
+                             piece_height - baseline_offset + 2),
                        GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
   }
   layout->x += piece_width;
@@ -504,6 +557,15 @@ static int16_t layout_sessions_text(GContext *ctx, GRect bounds, bool draw) {
   int16_t width = bounds.size.w;
   int16_t y = 0;
   char *line = s_sessions_text;
+
+  if (draw) {
+    graphics_context_set_text_color(ctx, ACCENT_AI);
+    graphics_draw_text(ctx, "Sessions", header_font, GRect(PADDING, y, width - (PADDING * 2), LABEL_HEIGHT),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  y += LABEL_HEIGHT + 2;
+  draw_divider(ctx, PADDING, y, width - (PADDING * 2), COLOR_DIM, draw);
+  y += DIVIDER_GAP + PADDING;
   bool assistant_markdown = false;
   bool in_code_block = false;
 
@@ -621,7 +683,7 @@ typedef struct {
 } SettingRow;
 
 static int8_t settings_row_count(void) {
-  return 8;
+  return 9;
 }
 
 static void get_settings_row(int8_t index, SettingRow *out) {
@@ -631,26 +693,30 @@ static void get_settings_row(int8_t index, SettingRow *out) {
       out->enabled = s_location_enabled;
       break;
     case 1:
+      out->label = "OpenStreetMap";
+      out->enabled = s_openstreetmap_enabled;
+      break;
+    case 2:
       out->label = "Memory";
       out->enabled = s_memory_enabled;
       break;
-    case 2:
+    case 3:
       out->label = "Calculator";
       out->enabled = s_calculator_enabled;
       break;
-    case 3:
+    case 4:
       out->label = "Search";
       out->enabled = s_search_enabled;
       break;
-    case 4:
+    case 5:
       out->label = "Weather";
       out->enabled = s_weather_enabled;
       break;
-    case 5:
+    case 6:
       out->label = "Choice";
       out->enabled = s_choice_enabled;
       break;
-    case 6:
+    case 7:
       out->label = "Timeline";
       out->enabled = s_timeline_enabled;
       break;
@@ -790,12 +856,12 @@ static void open_choice_screen(const char *question, const char *options_text) {
   s_choice_scroll_offset = 0;
 
   if (question) {
-    snprintf(s_choice_question, sizeof(s_choice_question), "%s", question);
+    utf8_copy(s_choice_question, sizeof(s_choice_question), question);
   }
 
   if (options_text) {
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s", options_text);
+    utf8_copy(buf, sizeof(buf), options_text);
     char *line = buf;
     while (line && *line && s_choice_option_count < MAX_CHOICE_OPTIONS) {
       char *next = strchr(line, '\n');
@@ -806,7 +872,7 @@ static void open_choice_screen(const char *question, const char *options_text) {
         line++;
       }
       if (*line != '\0') {
-        snprintf(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, "%.*s", MAX_CHOICE_TEXT - 1, line);
+        utf8_copy(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, line);
         s_choice_option_count++;
       }
       if (next) {
@@ -829,39 +895,40 @@ static void open_choice_screen(const char *question, const char *options_text) {
   update_display("Choose");
 }
 
+static int16_t choice_option_height(const char *option, GFont font, int16_t width) {
+  int16_t height = measure_text_height(option, font, width - (PADDING * 4)) + (PADDING * 2);
+  return height < ROW_HEIGHT ? ROW_HEIGHT : height;
+}
+
+static const char *choice_question_text(void) {
+  return s_choice_question[0] ? s_choice_question : "Question";
+}
+
+static int16_t choice_question_height(int16_t width) {
+  int16_t question_h = measure_text_height(choice_question_text(),
+                                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                                           width - (PADDING * 2));
+  return question_h < 20 ? 20 : question_h;
+}
+
+// The question stays pinned at the top; options start below it and scroll underneath.
+static int16_t choice_header_height(int16_t width) {
+  return PADDING + choice_question_height(width) + (PADDING * 2) + DIVIDER_GAP;
+}
+
 static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
   int16_t width = bounds.size.w;
-  int16_t y = PADDING + s_choice_scroll_offset;
-
-  // Question header background
-  int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question", question_font, width - (PADDING * 2));
-  if (question_h < 20) {
-    question_h = 20;
-  }
-  if (draw) {
-    graphics_context_set_fill_color(ctx, ACCENT_AI);
-    graphics_fill_rect(ctx, GRect(0, y, width, question_h + PADDING * 2), 0, GCornerNone);
-    graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, s_choice_question[0] ? s_choice_question : "Question", question_font,
-                       GRect(PADDING, y + PADDING, width - (PADDING * 2), question_h + PADDING),
-                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
-  }
-  y += question_h + PADDING * 2;
-  if (draw) {
-    draw_divider(ctx, PADDING, y, width - (PADDING * 2), COLOR_DIM, true);
-  }
-  y += DIVIDER_GAP;
+  int16_t question_h = choice_question_height(width);
+  int16_t header_h = choice_header_height(width);
+  int16_t y = header_h + s_choice_scroll_offset;
 
   // Options
   for (int i = 0; i < s_choice_option_count; i++) {
     bool selected = (i == s_choice_selection);
-    int16_t opt_h = measure_text_height(s_choice_options[i], option_font, width - (PADDING * 4));
-    if (opt_h < ROW_HEIGHT) {
-      opt_h = ROW_HEIGHT;
-    }
+    int16_t opt_h = choice_option_height(s_choice_options[i], option_font, width);
 
     if (draw) {
       if (selected) {
@@ -885,6 +952,19 @@ static int16_t layout_choice_text(GContext *ctx, GRect bounds, bool draw) {
   }
   y += 20 + PADDING * 2;
 
+  // Question header, drawn last so scrolled options pass underneath it.
+  if (draw) {
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_fill_rect(ctx, GRect(0, 0, width, header_h), 0, GCornerNone);
+    graphics_context_set_fill_color(ctx, ACCENT_AI);
+    graphics_fill_rect(ctx, GRect(0, PADDING, width, question_h + PADDING * 2), 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, choice_question_text(), question_font,
+                       GRect(PADDING, PADDING * 2, width - (PADDING * 2), question_h + PADDING),
+                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    draw_divider(ctx, PADDING, PADDING + question_h + PADDING * 2, width - (PADDING * 2), COLOR_DIM, true);
+  }
+
   return y;
 }
 
@@ -895,32 +975,24 @@ static void scroll_choice_selection_into_view(void) {
   }
 
   GRect bounds = layer_get_bounds(s_choice_layer);
-  GFont question_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   GFont option_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   int16_t width = bounds.size.w;
-  int16_t question_h = measure_text_height(s_choice_question[0] ? s_choice_question : "Question",
-                                           question_font, width - (PADDING * 2));
-  if (question_h < 20) {
-    question_h = 20;
-  }
+  int16_t header_h = choice_header_height(width);
 
-  int16_t row_top = PADDING + question_h + (PADDING * 2) + DIVIDER_GAP;
+  int16_t row_top = header_h;
   int16_t row_bottom = row_top;
   for (int i = 0; i <= s_choice_selection && i < s_choice_option_count; i++) {
-    int16_t option_h = measure_text_height(s_choice_options[i], option_font, width - (PADDING * 4));
-    if (option_h < ROW_HEIGHT) {
-      option_h = ROW_HEIGHT;
-    }
+    int16_t option_h = choice_option_height(s_choice_options[i], option_font, width);
     row_bottom = row_top + option_h;
     if (i < s_choice_selection) {
       row_top = row_bottom;
     }
   }
 
-  int16_t visible_top = -s_choice_scroll_offset + SETTINGS_SCROLL_MARGIN;
+  int16_t visible_top = -s_choice_scroll_offset + header_h + SETTINGS_SCROLL_MARGIN;
   int16_t visible_bottom = -s_choice_scroll_offset + bounds.size.h - SETTINGS_SCROLL_MARGIN;
   if (row_top < visible_top) {
-    s_choice_scroll_offset = SETTINGS_SCROLL_MARGIN - row_top;
+    s_choice_scroll_offset = header_h + SETTINGS_SCROLL_MARGIN - row_top;
   } else if (row_bottom > visible_bottom) {
     s_choice_scroll_offset = bounds.size.h - SETTINGS_SCROLL_MARGIN - row_bottom;
   }
@@ -1012,7 +1084,7 @@ static void append_chat_history(const char *text) {
   size_t current_len = strlen(s_chat_history);
   size_t remaining = sizeof(s_chat_history) - current_len - 1;
   if (remaining > 0) {
-    strncat(s_chat_history, text, remaining);
+    strncat(s_chat_history, text, utf8_prefix_length(text, remaining));
   }
 }
 
@@ -1030,7 +1102,7 @@ static void append_tool_activity_to_history(const char *tool) {
       size_t current_len = strlen(s_chat_history);
       size_t remaining = sizeof(s_chat_history) - current_len - 1;
       size_t copy_length = line_length < remaining ? line_length : remaining;
-      strncat(s_chat_history, line, copy_length);
+      strncat(s_chat_history, line, utf8_prefix_length(line, copy_length));
       append_chat_history("\n");
     }
     if (!line_end) {
@@ -1069,8 +1141,8 @@ static void home_layer_update_proc(Layer *layer, GContext *ctx) {
   GFont hint_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
 
   graphics_context_set_text_color(ctx, ACCENT_AI);
-  int16_t title_h = measure_text_height("Pebble AI", title_font, text_width);
-  graphics_draw_text(ctx, "Pebble AI", title_font, GRect(PADDING, y, text_width, title_h + 2),
+  int16_t title_h = measure_text_height(HOME_TITLE, title_font, text_width);
+  graphics_draw_text(ctx, HOME_TITLE, title_font, GRect(PADDING, y, text_width, title_h + 2),
                      GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
   y += title_h + 3;
 
@@ -1082,11 +1154,11 @@ static void home_layer_update_proc(Layer *layer, GContext *ctx) {
   graphics_draw_text(ctx, stats, stats_font, GRect(PADDING, y, text_width, bounds.size.h - y),
                      GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 
-  int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions", hint_font, text_width);
+  int16_t hint_h = measure_text_height(HOME_HINT, hint_font, text_width);
   int16_t hint_y = bounds.size.h - hint_h - PADDING;
   if (hint_y > y) {
     graphics_context_set_text_color(ctx, COLOR_DIM);
-    graphics_draw_text(ctx, "SELECT speak  UP tools  DOWN sessions", hint_font,
+    graphics_draw_text(ctx, HOME_HINT, hint_font,
                        GRect(PADDING, hint_y, text_width, hint_h + 2),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
   }
@@ -1116,13 +1188,11 @@ static void new_session_layer_update_proc(Layer *layer, GContext *ctx) {
   int16_t y = header_h + (hint_y - header_h - group_h) / 2;
   for (int i = 0; i < 2; i++) {
     bool selected = i == s_new_session_selection;
-    GColor fill = i == 0 ? GColorLightGray : GColorMediumAquamarine;
-    GColor text = i == 0 ? GColorDarkGray : ACCENT_AI;
     if (selected) {
-      graphics_context_set_fill_color(ctx, fill);
+      graphics_context_set_fill_color(ctx, ACCENT_SELECT);
       graphics_fill_rect(ctx, GRect(0, y, width, ROW_HEIGHT), 0, GCornerNone);
     }
-    graphics_context_set_text_color(ctx, text);
+    graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorBlack);
     graphics_draw_text(ctx, options[i], option_font,
                        GRect(PADDING, y + 3, width - (PADDING * 2), ROW_HEIGHT),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
@@ -1307,6 +1377,7 @@ static void layout_chat(bool scroll_to_bottom) {
   }
 
   int16_t content_height;
+  bool showing_home = false;
   if (s_show_new_session) {
     content_height = bounds.size.h;
     layer_set_frame(s_new_session_layer, GRect(0, 0, width, content_height));
@@ -1316,21 +1387,22 @@ static void layout_chat(bool scroll_to_bottom) {
   } else {
     int16_t text_width = width - (PADDING * 2);
     const char *stats = s_stats_text[0] ? s_stats_text : "Loading stats...";
-    int16_t title_h = measure_text_height("Pebble AI", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), text_width);
+    int16_t title_h = measure_text_height(HOME_TITLE, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD), text_width);
     GSize stats_size = graphics_text_layout_get_content_size(stats,
                                                              fonts_get_system_font(FONT_KEY_GOTHIC_24),
                                                              GRect(0, 0, text_width, TEXT_MEASURE_HEIGHT),
                                                              GTextOverflowModeWordWrap, GTextAlignmentLeft);
-    int16_t hint_h = measure_text_height("SELECT speak  UP tools  DOWN sessions",
+    int16_t hint_h = measure_text_height(HOME_HINT,
                                          fonts_get_system_font(FONT_KEY_GOTHIC_14), text_width);
     int16_t home_height = PADDING + (title_h + 3) + HOME_STATS_GAP + stats_size.h + PADDING + hint_h + PADDING;
     content_height = home_height > bounds.size.h ? home_height : bounds.size.h;
     layer_set_frame(s_home_layer, GRect(0, 0, width, content_height));
     layer_mark_dirty(s_home_layer);
+    showing_home = true;
   }
   scroll_layer_set_content_size(s_scroll_layer, GSize(width, content_height));
 
-  if (s_show_new_session) {
+  if (s_show_new_session || showing_home) {
     scroll_layer_set_content_offset(s_scroll_layer, GPointZero, false);
   } else if (s_show_settings && content_height > bounds.size.h) {
     GPoint offset = scroll_layer_get_content_offset(s_scroll_layer);
@@ -1390,7 +1462,7 @@ static void append_response_chunk(const char *chunk) {
   size_t current_len = strlen(s_assistant_response);
   size_t remaining = sizeof(s_assistant_response) - current_len - 1;
   if (remaining > 0) {
-    strncat(s_assistant_response, chunk, remaining);
+    strncat(s_assistant_response, chunk, utf8_prefix_length(chunk, remaining));
   }
 }
 
@@ -1539,7 +1611,7 @@ static void send_health_data(const char *range, uint32_t request_id) {
 // Rebuild the full screen text whenever prompt, status, or response changes.
 static void update_display(const char *status) {
   //AI: The status is shown in the top status bar, while messages live in the scroll layer.
-  snprintf(s_status_text, sizeof(s_status_text), "%s", status ? status : "Ready");
+  utf8_copy(s_status_text, sizeof(s_status_text), status ? status : "Ready");
   status_bar_layer_set_separator_mode(s_status_layer, StatusBarLayerSeparatorModeDotted);
   status_bar_layer_set_colors(s_status_layer, GColorWhite, GColorBlack);
   text_layer_set_text(s_prompt_layer, s_last_prompt);
@@ -1554,7 +1626,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
     return false;
   }
 
-  snprintf(s_last_prompt, sizeof(s_last_prompt), "%s", prompt);
+  utf8_copy(s_last_prompt, sizeof(s_last_prompt), prompt);
   s_assistant_response[0] = '\0';
   s_show_home = false;
   s_request_active = true;
@@ -1619,6 +1691,34 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   Tuple *reset_first_run_tuple = dict_find(iter, MESSAGE_KEY_ResetFirstRunNotice);
   Tuple *replay_prompt_tuple = dict_find(iter, MESSAGE_KEY_ReplayPrompt);
 
+#ifdef HAS_MIC_STREAM
+  Tuple *voice_transcript_tuple = dict_find(iter, MESSAGE_KEY_VoiceTranscript);
+  Tuple *voice_failed_tuple = dict_find(iter, MESSAGE_KEY_VoiceFailed);
+  Tuple *voice_level_tuple = dict_find(iter, MESSAGE_KEY_VoiceLevel);
+  if (voice_level_tuple) {
+    if (s_voice_listening) {
+      s_voice_level = voice_level_tuple->value->uint8;
+      layer_mark_dirty(s_voice_layer);
+    }
+    return;
+  }
+  if (voice_transcript_tuple || voice_failed_tuple) {
+    bool was_transcribing = s_voice_transcribing;
+    s_voice_transcribing = false;
+    if (!was_transcribing) {
+      // The user cancelled while the phone was still transcribing.
+      return;
+    }
+    if (voice_transcript_tuple && voice_transcript_tuple->length > 1) {
+      set_voice_ui(VoiceUiHidden);
+      handle_voice_transcript(voice_transcript_tuple->value->cstring, s_voice_for_choice);
+    } else {
+      show_voice_failure(voice_failed_tuple ? voice_failed_tuple->value->cstring : "Didn't catch that");
+    }
+    return;
+  }
+#endif
+
   if (reset_first_run_tuple && reset_first_run_tuple->value->int32 == 1) {
     persist_delete(PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED);
   }
@@ -1678,7 +1778,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     } else {
       //USR: Else do normal start screen with status
       //AI: No chunk index means this is a complete one-piece response, so replace the old text.
-      snprintf(s_assistant_response, sizeof(s_assistant_response), "%s", response_tuple->value->cstring);
+      utf8_copy(s_assistant_response, sizeof(s_assistant_response), response_tuple->value->cstring);
       append_chat_history(response_tuple->value->cstring);
       if (!s_response_started) {
         s_response_started = true;
@@ -1690,7 +1790,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   //USR: If error, print error
   //AI: If the phone sent an error, show it in place of the assistant response and mark status as Error.
   if (error_tuple) {
-    snprintf(s_assistant_response, sizeof(s_assistant_response), "%s", error_tuple->value->cstring);
+    utf8_copy(s_assistant_response, sizeof(s_assistant_response), error_tuple->value->cstring);
     if (s_current_ai_response_start) {
       *s_current_ai_response_start = '\0';
     }
@@ -1720,7 +1820,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 
   if (stats_tuple) {
 #ifdef PBL_PLATFORM_EMERY
-    snprintf(s_stats_text, sizeof(s_stats_text), "%s", stats_tuple->value->cstring);
+    utf8_copy(s_stats_text, sizeof(s_stats_text), stats_tuple->value->cstring);
 #else
     const char *stats = stats_tuple->value->cstring;
     const char *first_line_end = strchr(stats, '\n');
@@ -1747,6 +1847,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (tool_states_tuple) {
     const char *states = tool_states_tuple->value->cstring;
     s_location_enabled = strstr(states, "location=1") != NULL;
+    s_openstreetmap_enabled = strstr(states, "openstreetmap=1") != NULL;
     s_memory_enabled = strstr(states, "memory=1") != NULL;
     s_calculator_enabled = strstr(states, "calculator=1") != NULL;
     s_search_enabled = strstr(states, "search=1") != NULL;
@@ -1754,6 +1855,26 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_choice_enabled = strstr(states, "choice=1") != NULL;
     s_timeline_enabled = strstr(states, "timeline=1") != NULL;
     s_health_enabled = strstr(states, "health=1") != NULL;
+#ifdef HAS_MIC_STREAM
+    s_voice_direct = strstr(states, "direct=1") != NULL;
+#endif
+    bool voice_openrouter = strstr(states, "voice=1") != NULL;
+    if (voice_openrouter != s_voice_openrouter) {
+      s_voice_openrouter = voice_openrouter;
+      persist_write_bool(PERSIST_KEY_VOICE_OPENROUTER, voice_openrouter);
+    }
+#ifdef HAS_MIC_STREAM
+    s_phone_ready = true;
+    if (s_voice_waiting_for_phone) {
+      // Quick launch asked for voice before the phone app was running. Start it now.
+      s_voice_waiting_for_phone = false;
+      if (s_voice_phone_wait_timer) {
+        app_timer_cancel(s_voice_phone_wait_timer);
+        s_voice_phone_wait_timer = NULL;
+      }
+      start_voice_input(s_voice_waiting_for_choice);
+    }
+#endif
     if (s_show_settings) {
       layer_mark_dirty(s_settings_layer);
     }
@@ -1762,7 +1883,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   {
     Tuple *sessions_tuple = dict_find(iter, MESSAGE_KEY_OpenSessions);
     if (sessions_tuple) {
-      snprintf(s_sessions_text, sizeof(s_sessions_text), "%s", sessions_tuple->value->cstring);
+      utf8_copy(s_sessions_text, sizeof(s_sessions_text), sessions_tuple->value->cstring);
       if (s_show_sessions) {
         update_display("Ready");
       }
@@ -1821,7 +1942,7 @@ static void outbox_sent_callback(DictionaryIterator *iter, void *context) {
     if (s_active_request_id == 0) {
       s_active_request_id = 1;
     }
-    dictation_session_start(s_dictation_session);
+    start_voice_input(false);
   }
 }
 
@@ -1835,46 +1956,313 @@ static void inbox_dropped_callback(AppMessageResult reason, void *context) {
 // Pebble dictation calls this after speech recognition succeeds or fails.
 //USR: If user has finished their dictation, then send it to the Phone, else update the display with a "Dictation cancelled"
 //AI: If speech recognition succeeded, send the transcription to the phone; otherwise show "Dictation cancelled".
+static void handle_voice_transcript(const char *transcript, bool for_choice) {
+  if (for_choice) {
+    DictionaryIterator *iter;
+    AppMessageResult result = app_message_outbox_begin(&iter);
+    if (result != APP_MSG_OK || !iter) {
+      update_display("Choice send failed");
+      vibes_double_pulse();
+      return;
+    }
+    dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcript);
+    dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
+    dict_write_end(iter);
+    if (app_message_outbox_send() != APP_MSG_OK) {
+      update_display("Choice send failed");
+      vibes_double_pulse();
+      return;
+    }
+    append_choice_answer_to_history(transcript);
+    close_choice_screen();
+    s_show_home = false;
+    update_display("Sending...");
+    return;
+  }
+
+  // Forward the recognized speech to the phone-side JS for AI processing.
+  send_prompt(transcript);
+}
+
 static void dictation_callback(DictationSession *session, DictationSessionStatus status,
                                char *transcription, void *context) {
   if (s_choice_waiting_dictation) {
     s_choice_waiting_dictation = false;
     if (status == DictationSessionStatusSuccess) {
-      DictionaryIterator *iter;
-      AppMessageResult result = app_message_outbox_begin(&iter);
-      if (result != APP_MSG_OK || !iter) {
-        update_display("Choice send failed");
-        vibes_double_pulse();
-        return;
-      }
-      dict_write_cstring(iter, MESSAGE_KEY_ChoiceAnswer, transcription);
-      dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_active_request_id);
-      dict_write_end(iter);
-      if (app_message_outbox_send() != APP_MSG_OK) {
-        update_display("Choice send failed");
-        vibes_double_pulse();
-        return;
-      }
-      append_choice_answer_to_history(transcription);
-      close_choice_screen();
-      s_show_home = false;
-      update_display("Sending...");
+      handle_voice_transcript(transcription, true);
     }
     // On cancel, leave the choice screen open so user can try again/back
     return;
   }
 
   if (status == DictationSessionStatusSuccess) {
-    // Forward the recognized speech to the phone-side JS for AI processing.
-    send_prompt(transcription);
+    handle_voice_transcript(transcription, false);
   } else {
     s_show_home = true;
     update_display("Ready");
   }
 }
 
+static void start_pebble_dictation(bool for_choice) {
+  s_choice_waiting_dictation = for_choice;
+  dictation_session_start(s_dictation_session);
+}
+
+#ifdef HAS_MIC_STREAM
+// 0 = throw it away, 1 = a new prompt, 2 = an answer to a choice prompt.
+static bool send_voice_end(bool transcribe) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter) {
+    return false;
+  }
+  dict_write_uint8(iter, MESSAGE_KEY_VoiceEnd, transcribe ? (s_voice_for_choice ? 2 : 1) : 0);
+  dict_write_end(iter);
+  return app_message_outbox_send() == APP_MSG_OK;
+}
+
+static void format_voice_time(char *buffer, size_t size) {
+  int seconds = (int)(time(NULL) - s_voice_started_at);
+  if (seconds < 0) seconds = 0;
+  snprintf(buffer, size, "%d:%02d", seconds / 60, seconds % 60);
+}
+
+static void draw_centered(GContext *ctx, const char *text, GFont font, GRect box) {
+  graphics_draw_text(ctx, text, font, box, GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+}
+
+static void voice_layer_update_proc(Layer *layer, GContext *ctx) {
+  GRect full = layer_get_bounds(layer);
+  GRect area = layer_get_unobstructed_bounds(layer);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, full, 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+
+  GFont small_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
+  const char *title = s_voice_ui == VoiceUiRecording ? "Recording"
+    : s_voice_ui == VoiceUiWorking ? (s_voice_direct && !s_voice_for_choice ? "Sending..." : "Transcribing...")
+    : "Voice input";
+  // Header that matches the app's status bar: centered text over a dotted line.
+  draw_centered(ctx, title, small_font, GRect(0, -1, full.size.w, STATUS_BAR_LAYER_HEIGHT));
+  for (int16_t x = 0; x < full.size.w; x += 2) {
+    graphics_draw_pixel(ctx, GPoint(x, STATUS_BAR_LAYER_HEIGHT - 1));
+  }
+
+  int16_t top = STATUS_BAR_LAYER_HEIGHT;
+  int16_t height = area.origin.y + area.size.h - top;
+  int16_t w = full.size.w;
+
+  if (s_voice_ui == VoiceUiRecording) {
+    char time_text[12];
+    format_voice_time(time_text, sizeof(time_text));
+    GFont time_font = fonts_get_system_font(FONT_KEY_LECO_36_BOLD_NUMBERS);
+    int16_t block_h = 44 + 8 + 26 + 10 + 18;
+    int16_t y = top + (height - block_h) / 2;
+    draw_centered(ctx, time_text, time_font, GRect(0, y, w, 44));
+    y += 44 + 8;
+
+    // Level meter: taller in the middle, scaled by the latest level from the phone.
+    static const uint8_t shape[VOICE_METER_BARS] = { 45, 70, 90, 100, 90, 70, 45 };
+    int16_t bar_w = 5, gap = 3;
+    int16_t meter_w = VOICE_METER_BARS * bar_w + (VOICE_METER_BARS - 1) * gap;
+    int16_t x = (w - meter_w) / 2;
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    for (int i = 0; i < VOICE_METER_BARS; i++) {
+      int16_t bar_h = 3 + (int16_t)((int32_t)23 * s_voice_level * shape[i] / 10000);
+      graphics_fill_rect(ctx, GRect(x + i * (bar_w + gap), y + (26 - bar_h) / 2, bar_w, bar_h), 1, GCornersAll);
+    }
+    y += 26 + 10;
+    draw_centered(ctx, "SELECT send    BACK cancel", small_font, GRect(0, y, w, 18));
+
+    // Next to the firmware's mic square, once the Listening bar has shrunk.
+    GRect accessory;
+    if (layer_get_mic_accessory_bounds(layer, &accessory)) {
+      GFont acc_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+      GRect text_box = GRect(accessory.origin.x + 8, accessory.origin.y + (accessory.size.h - 22) / 2,
+                             accessory.size.w - 8, 22);
+      graphics_draw_text(ctx, time_text, acc_font, text_box, GTextOverflowModeTrailingEllipsis,
+                         GTextAlignmentLeft, NULL);
+    }
+    return;
+  }
+
+  if (s_voice_ui == VoiceUiWorking) {
+    GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24);
+    const char *text = s_voice_direct && !s_voice_for_choice ? "Sending your voice..." : "Turning speech into text...";
+    draw_centered(ctx, text, font, GRect(8, top + height / 2 - 30, w - 16, 60));
+    return;
+  }
+
+  // Failed
+  GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+  draw_centered(ctx, s_voice_failure, font, GRect(8, top + height / 2 - 40, w - 16, 56));
+  draw_centered(ctx, "SELECT try again    BACK close", small_font, GRect(0, top + height / 2 + 20, w, 18));
+}
+
+static void voice_cancel_timers(void) {
+  if (s_voice_timer) {
+    app_timer_cancel(s_voice_timer);
+    s_voice_timer = NULL;
+  }
+  if (s_voice_tick_timer) {
+    app_timer_cancel(s_voice_tick_timer);
+    s_voice_tick_timer = NULL;
+  }
+}
+
+static void set_voice_ui(VoiceUi ui) {
+  s_voice_ui = ui;
+  if (s_voice_layer) {
+    layer_set_hidden(s_voice_layer, ui == VoiceUiHidden);
+    layer_mark_dirty(s_voice_layer);
+  }
+}
+
+// Close the voice screen and go back to wherever the user started from.
+static void close_voice_ui(void) {
+  voice_cancel_timers();
+  set_voice_ui(VoiceUiHidden);
+  if (!s_voice_for_choice && s_chat_history[0] == '\0') {
+    s_show_home = true;
+  }
+  update_display("Ready");
+}
+
+static void show_voice_failure(const char *message) {
+  voice_cancel_timers();
+  snprintf(s_voice_failure, sizeof(s_voice_failure), "%s", message);
+  vibes_double_pulse();
+  set_voice_ui(VoiceUiFailed);
+}
+
+static void voice_tick(void *context) {
+  s_voice_tick_timer = app_timer_register(1000, voice_tick, NULL);
+  layer_mark_dirty(s_voice_layer);
+}
+
+// SELECT while recording: stop the mic and ask the phone for the transcript.
+static void finish_voice_recording(void) {
+  if (!s_voice_listening) {
+    return;
+  }
+  voice_cancel_timers();
+  s_voice_listening = false;
+  mic_stream_to_phone_stop();
+  if (!send_voice_end(true)) {
+    show_voice_failure("Couldn't reach phone");
+    return;
+  }
+  s_voice_transcribing = true;
+  set_voice_ui(VoiceUiWorking);
+}
+
+// BACK while recording or transcribing: drop the audio.
+static void cancel_voice_recording(void) {
+  if (s_voice_listening) {
+    mic_stream_to_phone_stop();
+  }
+  s_voice_listening = false;
+  s_voice_transcribing = false;
+  send_voice_end(false);
+  close_voice_ui();
+}
+
+static void voice_timer_callback(void *context) {
+  s_voice_timer = NULL;
+  finish_voice_recording();
+}
+
+static void voice_stream_started(void *context) {
+  s_voice_stream_started = true;
+  s_voice_started_at = time(NULL);
+  vibes_short_pulse();
+  layer_mark_dirty(s_voice_layer);
+}
+
+static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
+  voice_cancel_timers();
+  bool was_started = s_voice_stream_started;
+  s_voice_listening = false;
+  s_voice_stream_started = false;
+  if (!was_started && reason == MicStreamStopReasonPhone) {
+    // The phone refused the stream, usually because the microphone permission isn't allowed
+    // yet. Use Pebble dictation this time so the user isn't stuck.
+    set_voice_ui(VoiceUiHidden);
+    update_display("Mic not allowed");
+    start_pebble_dictation(s_voice_for_choice);
+    return;
+  }
+  send_voice_end(false);
+  show_voice_failure(reason == MicStreamStopReasonFocusLost ? "Recording interrupted" : "Recording stopped");
+}
+#endif
+
+#ifdef HAS_MIC_STREAM
+// The phone app never answered, so fall back to Pebble dictation.
+static void voice_phone_wait_timeout(void *context) {
+  s_voice_phone_wait_timer = NULL;
+  if (s_voice_waiting_for_phone) {
+    s_voice_waiting_for_phone = false;
+    start_pebble_dictation(s_voice_waiting_for_choice);
+  }
+}
+#endif
+
+// Start listening for a prompt or a choice answer.
+static void start_voice_input(bool for_choice) {
+#ifdef HAS_MIC_STREAM
+  if (s_voice_waiting_for_phone) {
+    return;
+  }
+  if (s_voice_openrouter && !s_phone_ready) {
+    // Right after launch the phone app isn't running yet and would refuse the mic stream,
+    // which used to open Pebble dictation on top of the recording screen. Wait for it.
+    s_voice_waiting_for_phone = true;
+    s_voice_waiting_for_choice = for_choice;
+    s_voice_phone_wait_timer = app_timer_register(VOICE_PHONE_WAIT_MS, voice_phone_wait_timeout, NULL);
+    update_display("Waiting for phone...");
+    return;
+  }
+  if (s_voice_openrouter && !s_voice_listening && !s_voice_transcribing) {
+    voice_cancel_timers();
+    s_voice_for_choice = for_choice;
+    s_voice_stream_started = false;
+    MicStreamStartResult result = mic_stream_to_phone_start(
+        (MicStreamHandlers){
+          .started = voice_stream_started,
+          .stopped = voice_stream_stopped,
+        },
+        NULL);
+    if (result == MicStreamStartOk) {
+      s_voice_listening = true;
+      s_voice_level = 0;
+      s_voice_started_at = time(NULL);
+      s_voice_timer = app_timer_register(VOICE_MAX_RECORD_MS, voice_timer_callback, NULL);
+      s_voice_tick_timer = app_timer_register(1000, voice_tick, NULL);
+      set_voice_ui(VoiceUiRecording);
+      return;
+    }
+    APP_LOG(APP_LOG_LEVEL_WARNING, "Mic stream failed: %d", (int)result);
+  }
+#endif
+  start_pebble_dictation(for_choice);
+}
+
 // SELECT is the only app-specific button action; UP/DOWN are kept for scrolling.
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
+#ifdef HAS_MIC_STREAM
+  if (s_voice_listening) {
+    finish_voice_recording();
+    return;
+  }
+  if (s_voice_transcribing) {
+    return;
+  }
+  if (s_voice_ui == VoiceUiFailed) {
+    start_voice_input(s_voice_for_choice);
+    return;
+  }
+#endif
   if (s_show_new_session) {
     if (s_new_session_selection == 0) {
       cancel_new_session_screen();
@@ -1887,8 +2275,7 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_show_choice) {
     if (s_choice_selection >= 0 && s_choice_selection < s_choice_option_count) {
       if (strcmp(s_choice_options[s_choice_selection], "Say your own") == 0) {
-        s_choice_waiting_dictation = true;
-        dictation_session_start(s_dictation_session);
+        start_voice_input(true);
       } else {
         send_choice_answer();
       }
@@ -1901,18 +2288,28 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
     return;
   }
 
-  // Ask Pebble to show its dictation UI and start listening to the microphone.
-  dictation_session_start(s_dictation_session);
+  // Listen for a prompt, with the custom STT or Pebble's dictation UI.
+  start_voice_input(false);
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice || s_show_new_session) {
+  if (s_show_choice || s_show_new_session || s_voice_listening || s_voice_transcribing) {
     return;
   }
   open_new_session_screen();
 }
 
 static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
+#ifdef HAS_MIC_STREAM
+  if (s_voice_listening || s_voice_transcribing) {
+    cancel_voice_recording();
+    return;
+  }
+  if (s_voice_ui == VoiceUiFailed) {
+    close_voice_ui();
+    return;
+  }
+#endif
   if (s_show_new_session) {
     cancel_new_session_screen();
     return;
@@ -2036,24 +2433,27 @@ static void toggle_selected_setting(void) {
       send_simple_command(MESSAGE_KEY_ToggleLocation, "Toggle failed");
       break;
     case 1:
-      send_simple_command(MESSAGE_KEY_ToggleMemory, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleOpenStreetMap, "Toggle failed");
       break;
     case 2:
-      send_simple_command(MESSAGE_KEY_ToggleCalculator, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleMemory, "Toggle failed");
       break;
     case 3:
-      send_simple_command(MESSAGE_KEY_ToggleSearch, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleCalculator, "Toggle failed");
       break;
     case 4:
-      send_simple_command(MESSAGE_KEY_ToggleWeather, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleSearch, "Toggle failed");
       break;
     case 5:
-      send_simple_command(MESSAGE_KEY_ToggleChoice, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleWeather, "Toggle failed");
       break;
     case 6:
-      send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
+      send_simple_command(MESSAGE_KEY_ToggleChoice, "Toggle failed");
       break;
     case 7:
+      send_simple_command(MESSAGE_KEY_ToggleTimeline, "Toggle failed");
+      break;
+    case 8:
       send_simple_command(MESSAGE_KEY_ToggleHealth, "Toggle failed");
       break;
   }
@@ -2203,6 +2603,14 @@ static void window_load(Window *window) {
   //AI: This must be added after the scroll layer so the down indicator appears on top.
   layer_add_child(window_layer, s_scroll_indicator_down);
 
+#ifdef HAS_MIC_STREAM
+  // Added last so the recording screen covers everything, including the status bar.
+  s_voice_layer = layer_create(bounds);
+  layer_set_update_proc(s_voice_layer, voice_layer_update_proc);
+  layer_add_child(window_layer, s_voice_layer);
+  layer_set_hidden(s_voice_layer, true);
+#endif
+
   // Show the initial idle screen.
   update_display("Ready");
 }
@@ -2215,7 +2623,7 @@ static void window_appear(Window *window) {
 
   if (s_start_dictation_on_appear && !s_show_first_run) {
     s_start_dictation_on_appear = false;
-    dictation_session_start(s_dictation_session);
+    start_voice_input(false);
   }
 }
 
@@ -2305,6 +2713,10 @@ static void window_unload(Window *window) {
   layer_destroy(s_settings_layer);
   layer_destroy(s_sessions_layer);
   layer_destroy(s_choice_layer);
+#ifdef HAS_MIC_STREAM
+  layer_destroy(s_voice_layer);
+  s_voice_layer = NULL;
+#endif
   status_bar_layer_destroy(s_status_layer);
   layer_destroy(s_scroll_indicator_down);
   scroll_layer_destroy(s_scroll_layer);
@@ -2336,6 +2748,7 @@ static void init(void) {
   dictation_session_enable_confirmation(s_dictation_session, false); // Purposly set to false
 
   s_start_dictation_on_appear = launch_reason() == APP_LAUNCH_QUICK_LAUNCH;
+  s_voice_openrouter = persist_read_bool(PERSIST_KEY_VOICE_OPENROUTER);
   window_stack_push(s_window, true); //USR: Make our window appear on the screen
   //AI: Push the window onto Pebble's window stack so it appears on screen, with animation.
 
@@ -2351,6 +2764,9 @@ static void init(void) {
 
 // Release resources before the app exits.
 static void deinit(void) {
+#ifdef HAS_MIC_STREAM
+  mic_stream_to_phone_stop();
+#endif
   // Tear down runtime objects created during init().
   dictation_session_destroy(s_dictation_session);
   if (s_first_run_window) {
