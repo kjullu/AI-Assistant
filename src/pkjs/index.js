@@ -3510,16 +3510,17 @@ function addTimelinePin(timeline, generation, executionId, callback) {
 // ---- Custom speech-to-text ----
 // The watch streams its microphone here (SDK 4.44 Microphone API). When the user presses SELECT
 // the watch sends VoiceEnd=1, and the recording is sent to an audio-capable OpenRouter model.
-var voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, waitTimer: null, request: null };
+var voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, recordingId: null, waitTimer: null, request: null };
 
 function resetVoiceState() {
-  if (voiceState.waitTimer) {
-    clearTimeout(voiceState.waitTimer);
+  var previous = voiceState;
+  voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, recordingId: null, waitTimer: null, request: null };
+  if (previous.waitTimer) {
+    clearTimeout(previous.waitTimer);
   }
-  if (voiceState.request) {
-    try { voiceState.request.abort(); } catch (err) {}
+  if (previous.request) {
+    try { previous.request.abort(); } catch (err) {}
   }
-  voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, waitTimer: null, request: null };
 }
 
 function encodeWav(chunks, sampleCount, sampleRate) {
@@ -3591,9 +3592,15 @@ function cleanTranscript(text) {
   return watchSafeText(clip(cleaned, VOICE_TRANSCRIPT_CHARS));
 }
 
+// Only voice results carry this recording ID. Chat request IDs are separate.
+function sendVoiceResult(payload) {
+  if (voiceState.recordingId !== null) payload.RequestId = voiceState.recordingId;
+  sendToWatch(payload);
+}
+
 function sendVoiceFailure(message, detail) {
   debugLog('Voice transcription failed: ' + (detail || message));
-  sendToWatch({ VoiceFailed: message });
+  sendVoiceResult({ VoiceFailed: message });
 }
 
 var OPENROUTER_TRANSCRIPTION_URL = 'https://openrouter.ai/api/v1/audio/transcriptions';
@@ -3636,7 +3643,7 @@ function transcribeVoice(audio, seconds) {
         sendVoiceFailure("Didn't catch that");
         return;
       }
-      sendToWatch({ VoiceTranscript: transcript });
+      sendVoiceResult({ VoiceTranscript: transcript });
     } catch (err) {
       sendVoiceFailure('Bad transcript', err.message);
     }
@@ -3691,18 +3698,19 @@ function finishVoiceIfReady() {
   if (decision === 'prompt' && voiceDirectEnabled()) {
     debugLog('Voice direct to chat model seconds=' + seconds);
     pendingVoicePrompt = { audio: audio, at: Date.now() };
-    sendToWatch({ VoiceTranscript: VOICE_PROMPT_TEXT });
+    sendVoiceResult({ VoiceTranscript: VOICE_PROMPT_TEXT });
     return;
   }
   transcribeVoice(audio, seconds);
 }
 
 // decision: null = throw the recording away, 'prompt' = new message, 'choice' = choice answer.
-function handleVoiceEnd(decision) {
+function handleVoiceEnd(decision, recordingId) {
   if (!decision) {
     resetVoiceState();
     return;
   }
+  voiceState.recordingId = recordingId === undefined ? null : recordingId;
   voiceState.decision = decision;
   if (voiceState.streaming) {
     // The last audio arrives before audiostreamstop. Don't wait forever if it never comes.
@@ -3816,7 +3824,7 @@ Pebble.addEventListener('ready', function() {
 Pebble.addEventListener('appmessage', function(e) {
   if (e.payload && e.payload.VoiceEnd !== undefined) {
     var voiceEnd = Number(e.payload.VoiceEnd);
-    handleVoiceEnd(voiceEnd === 1 ? 'prompt' : voiceEnd === 2 ? 'choice' : null);
+    handleVoiceEnd(voiceEnd === 1 ? 'prompt' : voiceEnd === 2 ? 'choice' : null, e.payload.RequestId);
     return;
   }
 
