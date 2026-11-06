@@ -39,6 +39,7 @@
 #define TOOL_HISTORY_PREFIX "[tool] "
 #define PERSIST_KEY_FIRST_RUN_ACKNOWLEDGED 1001
 #define PERSIST_KEY_VOICE_OPENROUTER 1002
+#define PERSIST_KEY_RESPONSE_VIBE 1003
 // Stop a custom voice recording automatically after this long.
 #define VOICE_MAX_RECORD_MS 60000
 
@@ -798,6 +799,30 @@ static void append_choice_answer_to_history(const char *answer) {
   append_chat_history(answer);
   append_chat_history("\n\nAI\n");
   s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
+}
+
+// Vibration when a response finishes. Set from the phone settings.
+typedef enum {
+  ResponseVibeOff = 0,
+  ResponseVibeShort,
+  ResponseVibeLong,
+  ResponseVibeDouble,
+  ResponseVibeTriple,
+} ResponseVibe;
+
+static ResponseVibe s_response_vibe = ResponseVibeDouble;
+
+static void vibe_response_done(void) {
+  static const uint32_t triple[] = { 100, 100, 100, 100, 100 };
+  switch (s_response_vibe) {
+    case ResponseVibeOff: break;
+    case ResponseVibeShort: vibes_short_pulse(); break;
+    case ResponseVibeLong: vibes_long_pulse(); break;
+    case ResponseVibeTriple:
+      vibes_enqueue_custom_pattern((VibePattern){ .durations = triple, .num_segments = ARRAY_LENGTH(triple) });
+      break;
+    default: vibes_double_pulse(); break;
+  }
 }
 
 static void send_choice_answer(void) {
@@ -1746,19 +1771,13 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       //AI: Add this chunk's text onto the full assistant response buffer.
       append_response_chunk(response_tuple->value->cstring);
       append_chat_history(response_tuple->value->cstring);
-      if (!s_response_started) {
-        s_response_started = true;
-        vibes_short_pulse();
-      }
+      s_response_started = true;
     } else {
       //USR: Else do normal start screen with status
       //AI: No chunk index means this is a complete one-piece response, so replace the old text.
       utf8_copy(s_assistant_response, sizeof(s_assistant_response), response_tuple->value->cstring);
       append_chat_history(response_tuple->value->cstring);
-      if (!s_response_started) {
-        s_response_started = true;
-        vibes_short_pulse();
-      }
+      s_response_started = true;
     }
   }
 
@@ -1776,7 +1795,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     vibes_double_pulse();
   } else if (chunk_done_tuple && chunk_done_tuple->value->int32 == 1) {
     s_request_active = false;
-    vibes_double_pulse();
+    vibe_response_done();
   }
 
   if (status_tuple && strcmp(status, "Cancelled") == 0) {
@@ -1833,6 +1852,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 #ifdef HAS_MIC_STREAM
     s_voice_direct = strstr(states, "direct=1") != NULL;
 #endif
+    const char *vibe = strstr(states, "vibe=");
+    if (vibe && vibe[5] >= '0' && vibe[5] <= '4') {
+      ResponseVibe response_vibe = (ResponseVibe)(vibe[5] - '0');
+      if (response_vibe != s_response_vibe) {
+        s_response_vibe = response_vibe;
+        persist_write_int(PERSIST_KEY_RESPONSE_VIBE, response_vibe);
+      }
+    }
     bool voice_openrouter = strstr(states, "voice=1") != NULL;
     if (voice_openrouter != s_voice_openrouter) {
       s_voice_openrouter = voice_openrouter;
@@ -2724,6 +2751,9 @@ static void init(void) {
 
   s_start_dictation_on_appear = launch_reason() == APP_LAUNCH_QUICK_LAUNCH;
   s_voice_openrouter = persist_read_bool(PERSIST_KEY_VOICE_OPENROUTER);
+  if (persist_exists(PERSIST_KEY_RESPONSE_VIBE)) {
+    s_response_vibe = (ResponseVibe)persist_read_int(PERSIST_KEY_RESPONSE_VIBE);
+  }
   window_stack_push(s_window, true); //USR: Make our window appear on the screen
   //AI: Push the window onto Pebble's window stack so it appears on screen, with animation.
 

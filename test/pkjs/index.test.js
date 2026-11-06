@@ -1900,3 +1900,12 @@ test('the meter forgets a loud last recording within about a second', () => {
   const levels = meterRun(runtime, Array(15).fill(400));
   assert.ok(levels[levels.length - 1] >= 90, 'adapted: ' + levels.slice(-4));
 });
+
+test('tool states carry the response vibration setting', () => {
+  const runtime = createRuntime({});
+  runtime.context.sendToolStatesToWatch();
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;vibe=3;/);
+  runtime.storage.set('ResponseVibration', 'off');
+  runtime.context.sendToolStatesToWatch();
+  assert.match(runtime.sentMessages.at(-1).ToolStates, /;vibe=0;/);
+});
