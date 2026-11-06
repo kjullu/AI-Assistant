@@ -1,5 +1,6 @@
 #include <pebble.h>
 #include <ctype.h>
+#include "utf8_text.h"
 
 //AI: Small spacing values used to lay out the Bobby-like stacked chat view.
 #define PADDING 5
@@ -836,12 +837,12 @@ static void open_choice_screen(const char *question, const char *options_text) {
   s_choice_scroll_offset = 0;
 
   if (question) {
-    snprintf(s_choice_question, sizeof(s_choice_question), "%s", question);
+    utf8_copy(s_choice_question, sizeof(s_choice_question), question);
   }
 
   if (options_text) {
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s", options_text);
+    utf8_copy(buf, sizeof(buf), options_text);
     char *line = buf;
     while (line && *line && s_choice_option_count < MAX_CHOICE_OPTIONS) {
       char *next = strchr(line, '\n');
@@ -852,7 +853,7 @@ static void open_choice_screen(const char *question, const char *options_text) {
         line++;
       }
       if (*line != '\0') {
-        snprintf(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, "%.*s", MAX_CHOICE_TEXT - 1, line);
+        utf8_copy(s_choice_options[s_choice_option_count], MAX_CHOICE_TEXT, line);
         s_choice_option_count++;
       }
       if (next) {
@@ -1058,7 +1059,7 @@ static void append_chat_history(const char *text) {
   size_t current_len = strlen(s_chat_history);
   size_t remaining = sizeof(s_chat_history) - current_len - 1;
   if (remaining > 0) {
-    strncat(s_chat_history, text, remaining);
+    strncat(s_chat_history, text, utf8_prefix_length(text, remaining));
   }
 }
 
@@ -1076,7 +1077,7 @@ static void append_tool_activity_to_history(const char *tool) {
       size_t current_len = strlen(s_chat_history);
       size_t remaining = sizeof(s_chat_history) - current_len - 1;
       size_t copy_length = line_length < remaining ? line_length : remaining;
-      strncat(s_chat_history, line, copy_length);
+      strncat(s_chat_history, line, utf8_prefix_length(line, copy_length));
       append_chat_history("\n");
     }
     if (!line_end) {
@@ -1436,7 +1437,7 @@ static void append_response_chunk(const char *chunk) {
   size_t current_len = strlen(s_assistant_response);
   size_t remaining = sizeof(s_assistant_response) - current_len - 1;
   if (remaining > 0) {
-    strncat(s_assistant_response, chunk, remaining);
+    strncat(s_assistant_response, chunk, utf8_prefix_length(chunk, remaining));
   }
 }
 
@@ -1585,7 +1586,7 @@ static void send_health_data(const char *range, uint32_t request_id) {
 // Rebuild the full screen text whenever prompt, status, or response changes.
 static void update_display(const char *status) {
   //AI: The status is shown in the top status bar, while messages live in the scroll layer.
-  snprintf(s_status_text, sizeof(s_status_text), "%s", status ? status : "Ready");
+  utf8_copy(s_status_text, sizeof(s_status_text), status ? status : "Ready");
   status_bar_layer_set_separator_mode(s_status_layer, StatusBarLayerSeparatorModeDotted);
   status_bar_layer_set_colors(s_status_layer, GColorWhite, GColorBlack);
   text_layer_set_text(s_prompt_layer, s_last_prompt);
@@ -1600,7 +1601,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
     return false;
   }
 
-  snprintf(s_last_prompt, sizeof(s_last_prompt), "%s", prompt);
+  utf8_copy(s_last_prompt, sizeof(s_last_prompt), prompt);
   s_assistant_response[0] = '\0';
   s_show_home = false;
   s_request_active = true;
@@ -1752,7 +1753,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     } else {
       //USR: Else do normal start screen with status
       //AI: No chunk index means this is a complete one-piece response, so replace the old text.
-      snprintf(s_assistant_response, sizeof(s_assistant_response), "%s", response_tuple->value->cstring);
+      utf8_copy(s_assistant_response, sizeof(s_assistant_response), response_tuple->value->cstring);
       append_chat_history(response_tuple->value->cstring);
       if (!s_response_started) {
         s_response_started = true;
@@ -1764,7 +1765,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   //USR: If error, print error
   //AI: If the phone sent an error, show it in place of the assistant response and mark status as Error.
   if (error_tuple) {
-    snprintf(s_assistant_response, sizeof(s_assistant_response), "%s", error_tuple->value->cstring);
+    utf8_copy(s_assistant_response, sizeof(s_assistant_response), error_tuple->value->cstring);
     if (s_current_ai_response_start) {
       *s_current_ai_response_start = '\0';
     }
@@ -1794,7 +1795,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 
   if (stats_tuple) {
 #ifdef PBL_PLATFORM_EMERY
-    snprintf(s_stats_text, sizeof(s_stats_text), "%s", stats_tuple->value->cstring);
+    utf8_copy(s_stats_text, sizeof(s_stats_text), stats_tuple->value->cstring);
 #else
     const char *stats = stats_tuple->value->cstring;
     const char *first_line_end = strchr(stats, '\n');
@@ -1857,7 +1858,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   {
     Tuple *sessions_tuple = dict_find(iter, MESSAGE_KEY_OpenSessions);
     if (sessions_tuple) {
-      snprintf(s_sessions_text, sizeof(s_sessions_text), "%s", sessions_tuple->value->cstring);
+      utf8_copy(s_sessions_text, sizeof(s_sessions_text), sessions_tuple->value->cstring);
       if (s_show_sessions) {
         update_display("Ready");
       }

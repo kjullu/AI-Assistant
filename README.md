@@ -8,7 +8,9 @@ The model can also use tools: it can search the web, find nearby places and get 
 
 Runs on Pebble Time, Pebble Time Steel, Pebble 2, and Pebble Time 2 (`basalt`, `diorite`, and `emery`).
 
-> Most of the daily use testing in done on the Pebble Time 2 (`Emery`).
+Most daily testing is on Pebble Time 2 (`emery`).
+
+Emoji use the glyphs and colors provided by the installed PebbleOS. PebbleOS 4.41.1 adds color emoji and hundreds of redrawn emoji. Firmware below 4.30 uses readable text fallbacks for unsupported emoji; monochrome screens display emoji without color.
 
 ## Install
 
