@@ -2160,3 +2160,54 @@ test('weather settings default to Celsius and reopen legacy automatic as metric'
     assert.equal(reopened.WeatherUnits, 'metric');
   }
 });
+
+test('voice results echo recording IDs for transcription, failures, and direct audio', () => {
+  for (const outcome of ['text', 'network', 'timeout', 'http', 'bad-json', 'empty', 'short', 'direct']) {
+    const runtime = createRuntime({ VoiceInput: 'openrouter' });
+    if (outcome === 'direct') audioModelInfo(runtime, 'google/gemini-3.8-flash', ['text', 'audio']);
+    if (outcome === 'direct') runtime.storage.set('OpenRouterModel', 'google/gemini-3.8-flash');
+    streamVoice(runtime, new Array(outcome === 'short' ? 10 : 8000).fill(9));
+    runtime.listeners.audiostreamstop({});
+    runtime.listeners.appmessage({ payload: { VoiceEnd: 1, RequestId: 42 } });
+    const request = runtime.requests[0];
+    if (request) {
+      if (outcome === 'network') request.onerror();
+      else if (outcome === 'timeout') request.ontimeout();
+      else {
+        request.status = outcome === 'http' ? 500 : 200;
+        request.responseText = outcome === 'bad-json' ? '{' : JSON.stringify({ text: outcome === 'empty' ? '' : 'Hello' });
+        request.onload();
+      }
+    }
+    const result = runtime.sentMessages.find(message => message.VoiceTranscript || message.VoiceFailed);
+    assert.ok(result, outcome);
+    assert.equal(result.RequestId, 42, outcome);
+  }
+});
+
+test('cancel and retry suppress old transcription callbacks and preserve queued result IDs', () => {
+  const runtime = createRuntime({ VoiceInput: 'openrouter' });
+  function begin(id) {
+    streamVoice(runtime, new Array(8000).fill(9));
+    runtime.listeners.audiostreamstop({});
+    runtime.listeners.appmessage({ payload: { VoiceEnd: 2, RequestId: id } });
+    return runtime.requests.at(-1);
+  }
+  const old = begin(10);
+  // Some XHR implementations dispatch an error synchronously from abort().
+  old.abort = () => old.onerror();
+  runtime.listeners.appmessage({ payload: { VoiceEnd: 0, RequestId: 10 } });
+  assert.equal(runtime.sentMessages.some(message => message.VoiceFailed), false);
+  const current = begin(11);
+  old.status = 200;
+  old.responseText = JSON.stringify({ text: 'Old' });
+  old.onload(); old.onerror(); old.ontimeout();
+  assert.equal(runtime.sentMessages.some(message => message.VoiceTranscript || message.VoiceFailed), false);
+  current.status = 200;
+  current.responseText = JSON.stringify({ text: 'Current' });
+  current.onload();
+  const delivered = runtime.sentMessages.find(message => message.VoiceTranscript);
+  assert.equal(delivered.RequestId, 11);
+  begin(12);
+  assert.equal(delivered.RequestId, 11, 'already queued results retain their original ID');
+});

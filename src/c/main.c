@@ -140,11 +140,16 @@ static bool s_voice_direct;
 static bool s_voice_stream_started;
 static AppTimer *s_voice_timer;
 static AppTimer *s_voice_tick_timer;
+#define VOICE_RESPONSE_WAIT_MS 60000
+static AppTimer *s_voice_response_timer;
+static uint32_t s_voice_attempt_id;
 static time_t s_voice_started_at;
 static uint8_t s_voice_level;
 static char s_voice_failure[48];
 static void set_voice_ui(VoiceUi ui);
 static void show_voice_failure(const char *message);
+static void fail_voice_delivery(const char *message);
+static void voice_cancel_timers(void);
 #endif
 static void start_voice_input(bool for_choice);
 #ifdef HAS_MIC_STREAM
@@ -1728,12 +1733,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
   if (voice_transcript_tuple || voice_failed_tuple) {
-    bool was_transcribing = s_voice_transcribing;
-    s_voice_transcribing = false;
-    if (!was_transcribing) {
-      // The user cancelled while the phone was still transcribing.
+    // Voice replies use RequestId independently of chat turns. Check it before
+    // touching the current attempt or its watchdog, including after a retry.
+    if (!s_voice_transcribing || !request_id_tuple ||
+        request_id_tuple->value->uint32 != s_voice_attempt_id) {
       return;
     }
+    s_voice_transcribing = false;
+    voice_cancel_timers();
     if (voice_transcript_tuple && voice_transcript_tuple->length > 1) {
       set_voice_ui(VoiceUiHidden);
       handle_voice_transcript(voice_transcript_tuple->value->cstring, s_voice_for_choice);
@@ -1938,6 +1945,17 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 }
 
 static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+#ifdef HAS_MIC_STREAM
+  Tuple *voice_end = dict_find(iter, MESSAGE_KEY_VoiceEnd);
+  Tuple *voice_id = dict_find(iter, MESSAGE_KEY_RequestId);
+  if (voice_end) {
+    if (voice_end->value->uint8 && s_voice_transcribing && voice_id &&
+        voice_id->value->uint32 == s_voice_attempt_id) {
+      fail_voice_delivery("Couldn't reach phone");
+    }
+    return;
+  }
+#endif
   if (dict_find(iter, MESSAGE_KEY_Prompt)) {
     s_request_active = false;
     update_display("Send failed");
@@ -2043,6 +2061,7 @@ static bool send_voice_end(bool transcribe) {
     return false;
   }
   dict_write_uint8(iter, MESSAGE_KEY_VoiceEnd, transcribe ? (s_voice_for_choice ? 2 : 1) : 0);
+  dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_voice_attempt_id);
   dict_write_end(iter);
   return app_message_outbox_send() == APP_MSG_OK;
 }
@@ -2127,6 +2146,10 @@ static void voice_layer_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void voice_cancel_timers(void) {
+  if (s_voice_response_timer) {
+    app_timer_cancel(s_voice_response_timer);
+    s_voice_response_timer = NULL;
+  }
   if (s_voice_timer) {
     app_timer_cancel(s_voice_timer);
     s_voice_timer = NULL;
@@ -2167,6 +2190,20 @@ static void voice_tick(void *context) {
   layer_mark_dirty(s_voice_layer);
 }
 
+// Never resend a transcription command: an ACK can be lost after the phone accepted it.
+static void fail_voice_delivery(const char *message) {
+  s_voice_transcribing = false;
+  send_voice_end(false); // Best effort: discard audio and abort phone-side transcription.
+  show_voice_failure(message);
+}
+
+static void voice_response_timeout(void *context) {
+  s_voice_response_timer = NULL;
+  if (s_voice_transcribing) {
+    fail_voice_delivery("Voice timed out");
+  }
+}
+
 // SELECT while recording: stop the mic and ask the phone for the transcript.
 static void finish_voice_recording(void) {
   if (!s_voice_listening) {
@@ -2176,11 +2213,15 @@ static void finish_voice_recording(void) {
   s_voice_listening = false;
   mic_stream_to_phone_stop();
   if (!send_voice_end(true)) {
-    show_voice_failure("Couldn't reach phone");
+    fail_voice_delivery("Couldn't reach phone");
     return;
   }
   s_voice_transcribing = true;
   set_voice_ui(VoiceUiWorking);
+  s_voice_response_timer = app_timer_register(VOICE_RESPONSE_WAIT_MS, voice_response_timeout, NULL);
+  if (!s_voice_response_timer) {
+    fail_voice_delivery("Voice timer failed");
+  }
 }
 
 // BACK while recording or transcribing: drop the audio.
@@ -2207,6 +2248,8 @@ static void voice_stream_started(void *context) {
 }
 
 static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
+  // A delayed stop notification must not tear down the transcription watchdog.
+  if (!s_voice_listening) return;
   voice_cancel_timers();
   bool was_started = s_voice_stream_started;
   s_voice_listening = false;
@@ -2252,6 +2295,7 @@ static void start_voice_input(bool for_choice) {
   }
   if (s_voice_openrouter && !s_voice_listening && !s_voice_transcribing) {
     voice_cancel_timers();
+    if (++s_voice_attempt_id == 0) s_voice_attempt_id = 1;
     s_voice_for_choice = for_choice;
     s_voice_stream_started = false;
     MicStreamStartResult result = mic_stream_to_phone_start(
@@ -2795,6 +2839,7 @@ static void init(void) {
 // Release resources before the app exits.
 static void deinit(void) {
 #ifdef HAS_MIC_STREAM
+  voice_cancel_timers();
   mic_stream_to_phone_stop();
 #endif
   // Tear down runtime objects created during init().
