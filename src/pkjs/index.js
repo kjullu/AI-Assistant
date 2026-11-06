@@ -3816,6 +3816,9 @@ Pebble.addEventListener('audiostreamstop', function() {
 
 Pebble.addEventListener('ready', function() {
   console.log('PebbleKit JS ready');
+  debugLog('Phone companion started');
+  // Requests from the previous JavaScript runtime cannot finish after restart.
+  sendToWatch({ CompanionReady: 1 });
   sendStatsToWatch();
   sendToolStatesToWatch();
   refreshRemainingCredits();

@@ -1,5 +1,13 @@
 # Unreleased
 
+- Show a connection-loss error if the phone companion restarts during a reply, including after a quick Bluetooth reconnect.
+
+- Show an interrupted-reply error when a quick reconnect delivers the end of a reply without its earlier text chunks.
+
+- Update app attribution to Kjullu and Agents.
+
+- End interrupted chats with a visible connection error when the phone disconnects, and ignore delayed replies after reconnecting.
+
 - Default weather to Celsius and metric units, with Fahrenheit available in the app settings instead of locale-based automatic selection.
 
 - Add metric and imperial weather units, detailed conditions, local sun times and compact hourly and daily forecasts.
