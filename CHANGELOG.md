@@ -1,5 +1,6 @@
 # Unreleased
 
+- Reduce token usage by preserving each turn's timestamp in the cacheable prompt prefix and removing redundant prompt text.
 - Keep readable emoji fallbacks on firmware below PebbleOS 4.30 or when the firmware version is unavailable.
 - Truncate watch text at UTF-8 boundaries and phone-side summaries and options at complete emoji pairs, preventing blank choice questions and broken text.
 - Let PebbleOS render its full emoji set, including the new color emoji, instead of replacing emoji with text placeholders.
