@@ -5,7 +5,7 @@ import tempfile
 
 source = pathlib.Path('src/c/main.c').read_text()
 start = source.index('static bool accept_response_chunk(')
-end = source.index('static void companion_restarted(', start)
+end = source.index('static void stop_chat_reply_timer(void) {', start)
 program = r'''
 #include <assert.h>
 #include <stdbool.h>

@@ -1,26 +1,17 @@
-# Unreleased
+# 0.5.0
 
-- Show a connection-loss error if the phone companion restarts during a reply, including after a quick Bluetooth reconnect.
-
+- Time out chats after 90 seconds without request activity, including lost replies and phone companion restarts, without rejecting valid requests during startup.
 - Show an interrupted-reply error when a quick reconnect delivers the end of a reply without its earlier text chunks.
-
 - Update app attribution to Kjullu and Agents.
-
 - End interrupted chats with a visible connection error when the phone disconnects, and ignore delayed replies after reconnecting.
-
 - Default weather to Celsius and metric units, with Fahrenheit available in the app settings instead of locale-based automatic selection.
-
 - Add metric and imperial weather units, detailed conditions, local sun times and compact hourly and daily forecasts.
-
 - Fix voice input getting stuck after delivery failures or missing replies, and ignore stale transcription results after cancellation or retry.
-
 - Reduce token usage by preserving each turn's timestamp in the cacheable prompt prefix and removing redundant prompt text.
 - Keep readable emoji fallbacks on firmware below PebbleOS 4.30 or when the firmware version is unavailable.
 - Truncate watch text at UTF-8 boundaries and phone-side summaries and options at complete emoji pairs, preventing blank choice questions and broken text.
 - Let PebbleOS render its full emoji set, including the new color emoji, instead of replacing emoji with text placeholders.
 - Preserve emoji sequences and keep emoji pairs intact when splitting complete replies into watch messages.
-
-# 0.5.0
 
 - Add OpenRouter speech-to-text as an option: the watch records with the new Microphone API and a transcription model (default `elevenlabs/scribe-v2`) turns it into text. Recording gets its own screen with a timer and a live level meter. Press SELECT to send, BACK to cancel, and SELECT again to retry if transcription fails. Pebble Time 2 only, falls back to Pebble dictation elsewhere.
 - Add "Send voice straight to the model", shown when the main model accepts audio: the recording goes to the chat model itself instead of being transcribed first.
