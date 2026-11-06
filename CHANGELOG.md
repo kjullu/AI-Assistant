@@ -4,20 +4,15 @@
 - Keep plugin notifications behind their own setting.
 - Add a Pebble Plugins section to phone settings with a toggle for each installed plugin.
 - Declare the calendar, notification, music, app-launch, and find-my-phone permissions the plugin tools use.
-- Reduce token usage by preserving each turn's timestamp in the cacheable prompt prefix and removing redundant prompt text.
-- Keep readable emoji fallbacks on firmware below PebbleOS 4.30 or when the firmware version is unavailable.
-- Truncate watch text at UTF-8 boundaries and phone-side summaries and options at complete emoji pairs, preventing blank choice questions and broken text.
-- Let PebbleOS render its full emoji set, including the new color emoji, instead of replacing emoji with text placeholders.
-- Preserve emoji sequences and keep emoji pairs intact when splitting complete replies into watch messages.
 
 # 0.5.0
 
-- Add OpenRouter speech-to-text as an option: the watch records with the new Microphone API and a transcription model (default `elevenlabs/scribe-v2`) turns it into text. Recording gets its own screen with a timer and a live level meter. Press SELECT to send, BACK to cancel, and SELECT again to retry if transcription fails. Pebble Time 2 only, falls back to Pebble dictation elsewhere.
-- Add "Send voice straight to the model", shown when the main model accepts audio: the recording goes to the chat model itself instead of being transcribed first.
-- Quick launch with OpenRouter voice waits for the phone app before recording, instead of opening Pebble dictation on top of the recording screen.
-- Make the recording meter follow your voice more closely: the phone sends the loudest level since the last update as fast as the watch accepts them, and the meter no longer sinks every second.
-- Give the recording meter auto gain: its top follows your voice (fast to adjust at the start of a recording, ignores single taps), while background noise like wind still shows.
-- Update to Pebble SDK 4.44 and declare the app's permissions (microphone, location, timeline, health, and the internet domains it uses).
+- Add OpenRouter voice input on Pebble Time 2, with a recording timer, adaptive level meter, and either a configurable speech model or direct audio to compatible chat models. Other watches keep using Pebble dictation.
+- Fix stuck voice input and blank replies after delivery failures, disconnects, or phone companion restarts. Add reply timeouts, ignore stale results, and wait for the phone before recording through Quick Launch.
+- Add detailed weather conditions, local sun times, and compact hourly and daily forecasts. Default to Celsius and metric units, with an imperial option in settings.
+- Support the full PebbleOS emoji set, including color emoji, with readable fallbacks on older or unknown firmware, and preserve complete characters and emoji sequences to prevent broken text and blank choice questions.
+- Reduce token usage by improving prompt caching and removing redundant prompt text.
+- Update to Pebble SDK 4.44 and declare microphone, location, timeline, health, and internet permissions.
 
 # 0.4.1
 
