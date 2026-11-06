@@ -1192,3 +1192,45 @@ test('choice answers and non-audio models still use the speech model', () => {
   toggledOff.listeners.appmessage({ payload: { VoiceEnd: 1 } });
   assert.equal(toggledOff.requests.at(-1).url, 'https://openrouter.ai/api/v1/audio/transcriptions');
 });
+
+function meterRun(runtime, amplitudes) {
+  const levels = [];
+  runtime.setSendHandler((dict, success) => {
+    if (dict.VoiceLevel !== undefined) levels.push(dict.VoiceLevel);
+    success({});
+  });
+  runtime.listeners.audiostreamstart({ sampleRate: 16000, format: 'pcm16le' });
+  for (const amp of amplitudes) {
+    const chunk = new Int16Array(1600).map((_, i) => (i % 2 ? amp : -amp));
+    runtime.listeners.audiostream({ data: chunk.buffer });
+  }
+  runtime.listeners.audiostreamstop({});
+  return levels;
+}
+
+test('voice meter fills for quiet and loud speakers, stays low in silence', () => {
+  const quiet = meterRun(createRuntime(), Array(30).fill(300));
+  assert.ok(quiet[quiet.length - 1] >= 90, 'quiet voice fills the meter: ' + quiet.slice(-3));
+
+  const loud = meterRun(createRuntime(), Array(30).fill(8000));
+  assert.ok(loud[loud.length - 1] >= 90, 'loud voice fills the meter: ' + loud.slice(-3));
+
+  const silent = meterRun(createRuntime(), Array(30).fill(40));
+  assert.equal(silent[silent.length - 1], 0);
+
+  const noise = meterRun(createRuntime(), Array(30).fill(120));
+  assert.ok(noise[noise.length - 1] > 0, 'wind/room noise still shows');
+});
+
+test('one tap does not shrink the meter for speech after it', () => {
+  const runtime = createRuntime();
+  const levels = meterRun(runtime, [...Array(20).fill(800), 30000, ...Array(5).fill(800)]);
+  assert.ok(levels[levels.length - 1] >= 85, 'speech after a tap: ' + levels.slice(-6));
+});
+
+test('the meter forgets a loud last recording within about a second', () => {
+  const runtime = createRuntime();
+  meterRun(runtime, Array(40).fill(20000));
+  const levels = meterRun(runtime, Array(15).fill(400));
+  assert.ok(levels[levels.length - 1] >= 90, 'adapted: ' + levels.slice(-4));
+});

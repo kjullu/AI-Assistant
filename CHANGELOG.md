@@ -4,6 +4,7 @@
 - Add "Send voice straight to the model", shown when the main model accepts audio: the recording goes to the chat model itself instead of being transcribed first.
 - Quick launch with OpenRouter voice waits for the phone app before recording, instead of opening Pebble dictation on top of the recording screen.
 - Make the recording meter follow your voice more closely: the phone sends the loudest level since the last update as fast as the watch accepts them, and the meter no longer sinks every second.
+- Give the recording meter auto gain: its top follows your voice (fast to adjust at the start of a recording, ignores single taps), while background noise like wind still shows.
 - Update to Pebble SDK 4.44 and declare the app's permissions (microphone, location, timeline, health, and the internet domains it uses).
 
 # 0.4.1
