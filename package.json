@@ -92,7 +92,8 @@
       "VoiceModel",
       "VoiceDirect",
       "VoiceLevel",
-      "ResponseVibration"
+      "ResponseVibration",
+      "WeatherUnits"
     ],
     "resources": {
       "media": []

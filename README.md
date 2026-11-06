@@ -45,7 +45,7 @@ The home screen shows your remaining OpenRouter credit and how many messages and
 | --- | --- | --- |
 | Memory | On | Keeps notes the model can add to; you can edit them in settings |
 | Calculator | On | Arithmetic, unit conversion, and currency conversion |
-| Weather | On | Current weather and forecasts for a place |
+| Weather | On | Detailed current weather, hourly and daily forecasts, UV and sun times; metric units by default, with an imperial option in app settings |
 | Choice | On | Lets the model give you options to pick from on the watch |
 | Timeline | On | Adds reminders and events to your Pebble timeline |
 | Location | Off | Gives the model your phone's coordinates and a rough place name |
