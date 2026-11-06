@@ -3125,19 +3125,59 @@ Pebble.addEventListener('audiostreamstart', function(e) {
   voiceState.streaming = true;
   pendingVoiceLevel = -1;
   voiceLevelInFlight = false;
+  resetVoiceMeter();
   debugLog('Voice stream start rate=' + (e && e.sampleRate) + ' format=' + (e && e.format));
 });
 
 var voiceLevelInFlight = false;
 var pendingVoiceLevel = -1; // Loudest level since the last send, or -1 when nothing is waiting
 
-// Loudness of a chunk as 0-100, on a rough log scale so normal speech fills most of the meter.
-function voiceLevel(samples) {
+// Meter auto gain. The bottom of the meter is fixed, so whatever the mic hears (wind, room noise)
+// still shows. The top follows the user's voice: it climbs a little per chunk, so one tap or knock
+// can't set it, and it sinks when things get quieter, fast at the start of a recording so last
+// time's level (a loud room yesterday) is forgotten quickly, then slowly.
+var METER_FLOOR_DB = 36;           // About RMS 60: below this the meter is empty
+var METER_MIN_SPAN_DB = 15;        // The top never gets closer than this to the floor
+var METER_DEFAULT_TOP_DB = 60;     // Normal speech at arm's length, before anything is learned
+var METER_CLIMB_DB = 3;            // Max rise per 100 ms chunk
+var METER_FAST_SINK_DB = 3;        // Per chunk during the first second and a half
+var METER_SLOW_SINK_DB = 0.3;      // Per chunk after that (about 3 dB a second)
+var METER_FAST_CHUNKS = 15;
+var METER_TOP_KEY = 'VoiceMeterTopDb';
+var meterTopDb = METER_DEFAULT_TOP_DB;
+var meterChunks = 0;
+
+function chunkDb(samples) {
   var sum = 0;
   for (var i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
   var rms = Math.sqrt(sum / Math.max(1, samples.length));
-  if (rms < 60) return 0;
-  return Math.max(0, Math.min(100, Math.round((Math.log(rms / 60) / Math.log(10000 / 60)) * 100)));
+  return rms > 0 ? 20 * Math.log(rms) / Math.LN10 : 0;
+}
+
+function resetVoiceMeter() {
+  var saved = Number(localStorage.getItem(METER_TOP_KEY));
+  meterTopDb = saved > 0 ? saved : METER_DEFAULT_TOP_DB;
+  meterChunks = 0;
+}
+
+function saveVoiceMeter() {
+  if (meterChunks > 0) localStorage.setItem(METER_TOP_KEY, String(Math.round(meterTopDb * 10) / 10));
+}
+
+// Loudness of a chunk as 0-100 relative to the learned top.
+function voiceLevel(samples) {
+  var db = chunkDb(samples);
+  var minTop = METER_FLOOR_DB + METER_MIN_SPAN_DB;
+  if (db > meterTopDb) {
+    meterTopDb += Math.min(db - meterTopDb, METER_CLIMB_DB);
+  } else {
+    var sink = meterChunks < METER_FAST_CHUNKS ? METER_FAST_SINK_DB : METER_SLOW_SINK_DB;
+    meterTopDb = Math.max(meterTopDb - sink, db);
+  }
+  meterTopDb = Math.max(meterTopDb, minTop);
+  meterChunks++;
+  var level = (db - METER_FLOOR_DB) / (meterTopDb - METER_FLOOR_DB);
+  return Math.max(0, Math.min(100, Math.round(level * 100)));
 }
 
 // Meter updates for the recording screen. One message in flight at a time; while it is busy we keep
@@ -3166,6 +3206,7 @@ Pebble.addEventListener('audiostream', function(e) {
 
 Pebble.addEventListener('audiostreamstop', function() {
   voiceState.streaming = false;
+  saveVoiceMeter();
   debugLog('Voice stream stop samples=' + voiceState.sampleCount);
   finishVoiceIfReady();
 });
