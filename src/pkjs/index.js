@@ -1214,6 +1214,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableCalculator = settingValue(convertedSettings, rawSettings, 'EnableCalculator', messageKeys.EnableCalculator);
   var enableSearch = settingValue(convertedSettings, rawSettings, 'EnableSearch', messageKeys.EnableSearch);
   var enableWeather = settingValue(convertedSettings, rawSettings, 'EnableWeather', messageKeys.EnableWeather);
+  var weatherUnits = settingValue(convertedSettings, rawSettings, 'WeatherUnits', messageKeys.WeatherUnits);
   var enableScrape = settingValue(convertedSettings, rawSettings, 'EnableScrape', messageKeys.EnableScrape);
   var enableChoice = settingValue(convertedSettings, rawSettings, 'EnableChoice', messageKeys.EnableChoice);
   var enableTimeline = settingValue(convertedSettings, rawSettings, 'EnableTimeline', messageKeys.EnableTimeline);
@@ -1257,6 +1258,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (enableSearch !== undefined) {
     localStorage.setItem('EnableSearch', String(enableSearch ? 1 : 0));
+  }
+  if (weatherUnits !== undefined) {
+    localStorage.setItem('WeatherUnits', normalizeWeatherUnits(weatherUnits));
   }
   if (enableWeather !== undefined) {
     localStorage.setItem('EnableWeather', String(enableWeather ? 1 : 0));
@@ -1338,7 +1342,7 @@ function buildSystemPrompt() {
   ];
 
   if (weatherAvailable) {
-    lines.push('For weather where the user is now, set place to exactly "current location". The weather tool reads the phone coordinates when Location is enabled, so do not call the Location tool first. Accept named regions like states, countries, or broad areas such as "central Europe".');
+    lines.push('Weather includes user units, feels-like, UV, rain chance, wind and local sun times. For weather where the user is now, set place to exactly "current location". The weather tool reads the phone coordinates when Location is enabled, so do not call the Location tool first. Accept named regions like states, countries, or broad areas such as "central Europe".');
   }
   if (locationAvailable) {
     lines.push('Use Location for "where am I" requests.');
@@ -1403,9 +1407,9 @@ function buildToolDefinitions() {
     }, ['url']));
   }
   if (getBoolSetting('EnableWeather', true)) {
-    tools.push(functionTool('weather', 'Get weather for a place or the current phone location.', {
+    tools.push(functionTool('weather', 'Get current, hourly or daily weather, feels-like, UV, rain chance, wind and sun times in user units.', {
       place: { type: 'string', description: 'A city, region, or exactly "current location".' },
-      timeframe: { type: 'string', description: 'now, today, tomorrow, +<hours>h, or +<days>d.' }
+      timeframe: { type: 'string', description: 'now, today, tomorrow, +<hours>h with nearby hours, +<days>d for a day, or next <days>d for daily forecasts (up to 7 days).' }
     }, ['place', 'timeframe']));
   }
   if (getBoolSetting('EnableLocation', false)) {
@@ -1704,6 +1708,11 @@ function parseTimeframe(timeframe) {
     return { type: 'hourly', offset: Number(hourMatch[1]) };
   }
 
+  var rangeMatch = tf.match(/^next (\d+)d$/);
+  if (rangeMatch) {
+    return { type: 'daily', offset: 0, count: Math.max(1, Math.min(7, Number(rangeMatch[1]))) };
+  }
+
   var dayMatch = tf.match(/^\+(\d+)d$/);
   if (dayMatch) {
     return { type: 'daily', offset: Number(dayMatch[1]) };
@@ -1712,17 +1721,33 @@ function parseTimeframe(timeframe) {
   return { type: 'current' };
 }
 
+function normalizeWeatherUnits(value) {
+  return value === 'imperial' ? 'imperial' : 'metric';
+}
+
+function weatherUnitSettings() {
+  var imperial = normalizeWeatherUnits(getSetting('WeatherUnits', 'metric')) === 'imperial';
+  return imperial ? { temperature: 'fahrenheit', wind: 'mph', precipitation: 'inch', temperatureLabel: '°F', windLabel: 'mph' } :
+    { temperature: 'celsius', wind: 'kmh', precipitation: 'mm', temperatureLabel: '°C', windLabel: 'km/h' };
+}
+
+// Treat timezone-less API timestamps as wall-clock values, never phone-local dates.
+function weatherLocalMillis(time) {
+  var match = String(time || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  return match ? Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5]) : NaN;
+}
+
 function findHourlyIndex(hourly, targetDate) {
   var times = hourly && hourly.time ? hourly.time : [];
-  if (!times.length) {
+  var target = typeof targetDate === 'number' ? targetDate : targetDate.getTime();
+  if (!times.length || !isFinite(target) || target < weatherLocalMillis(times[0]) ||
+      target > weatherLocalMillis(times[times.length - 1]) + 3599999) {
     return -1;
   }
-  var target = targetDate.getTime();
-  var bestIndex = 0;
+  var bestIndex = -1;
   var bestDiff = Infinity;
   for (var i = 0; i < times.length; i++) {
-    var t = new Date(times[i]).getTime();
-    var diff = Math.abs(t - target);
+    var diff = Math.abs(weatherLocalMillis(times[i]) - target);
     if (diff < bestDiff) {
       bestDiff = diff;
       bestIndex = i;
@@ -1732,47 +1757,86 @@ function findHourlyIndex(hourly, targetDate) {
 }
 
 function formatWeatherResult(place, data, timeframe) {
+  data = data || {};
   var tf = parseTimeframe(timeframe);
-  var locationName = place || 'Current location';
-  var lines = ['Weather for ' + locationName];
+  var units = weatherUnitSettings();
+  var lines = ['Weather for ' + (place || 'Current location') + (data.timezone ? ' (' + data.timezone + ', local time)' : '')];
+  var daily = data.daily || {};
+  var hourly = data.hourly || {};
+  var current = data.current || {};
+  var localNow = weatherLocalMillis(current.time);
+  if (!isFinite(localNow)) {
+    localNow = new Date().getTime() + (data.utc_offset_seconds || 0) * 1000;
+  }
+  var localDay = new Date(localNow).toISOString().slice(0, 10);
+  var todayIndex = daily.time ? daily.time.indexOf(localDay) : -1;
+  // Daily arrays start at today even if a sparse response has no current timestamp.
+  if (todayIndex < 0 && !current.time) todayIndex = 0;
 
-  if (tf.type === 'current' && data.current) {
-    var current = data.current;
-    lines.push('Now: ' + Math.round(current.temperature_2m) + data.current_units.temperature_2m + ', ' + weatherCodeText(current.weather_code));
-    lines.push('Feels like ' + Math.round(current.apparent_temperature) + data.current_units.apparent_temperature);
-    lines.push('Wind ' + Math.round(current.wind_speed_10m) + data.current_units.wind_speed_10m + ', humidity ' + current.relative_humidity_2m + data.current_units.relative_humidity_2m);
-    if (current.precipitation > 0) {
-      lines.push('Precipitation ' + current.precipitation + data.current_units.precipitation);
-    }
-    return lines.join('\n');
+  function value(group, key, index) {
+    var raw = group[key];
+    return index === undefined ? raw : (raw ? raw[index] : undefined);
+  }
+  function number(group, key, index, label, unit, rounded) {
+    var raw = value(group, key, index);
+    return typeof raw === 'number' && isFinite(raw) ? label + (rounded ? Math.round(raw) : raw) + unit : '';
+  }
+  function unit(group, key, fallback) {
+    return (data[group + '_units'] || {})[key] || fallback;
+  }
+  function condition(group, index) {
+    return value(group, 'weather_code', index) == null ? '' : weatherCodeText(value(group, 'weather_code', index));
+  }
+  function sun(key, index) {
+    var match = String(value(daily, key, index) || '').match(/T(\d{2}:\d{2})/);
+    return match ? key + ' ' + match[1] : '';
+  }
+  function details(group, name, index) {
+    var direction = value(group, 'wind_direction_10m', index);
+    var windFrom = typeof direction === 'number' && isFinite(direction) ? 'from ' + direction + '° ' +
+      ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(((direction % 360 + 360) % 360) / 45) % 8] : '';
+    return [number(group, 'temperature_2m', index, '', unit(name, 'temperature_2m', units.temperatureLabel), true),
+      condition(group, index),
+      number(group, 'apparent_temperature', index, 'feels like ', unit(name, 'apparent_temperature', units.temperatureLabel), true),
+      number(group, 'relative_humidity_2m', index, 'humidity ', '%'),
+      number(group, 'wind_speed_10m', index, 'wind ', unit(name, 'wind_speed_10m', units.windLabel), true), windFrom,
+      number(group, 'precipitation_probability', index, 'precip chance ', '%'),
+      number(group, 'precipitation', index, 'precip ', unit(name, 'precipitation', units.precipitation)),
+      number(group, 'uv_index', index, 'UV ', '')].filter(function(part) { return !!part; }).join(', ');
+  }
+  function day(index) {
+    return [number(daily, 'temperature_2m_max', index, 'high ', unit('daily', 'temperature_2m_max', units.temperatureLabel), true),
+      number(daily, 'temperature_2m_min', index, 'low ', unit('daily', 'temperature_2m_min', units.temperatureLabel), true),
+      condition(daily, index), number(daily, 'precipitation_probability_max', index, 'precip chance ', '%'),
+      number(daily, 'precipitation_sum', index, 'precip ', unit('daily', 'precipitation_sum', units.precipitation)),
+      number(daily, 'uv_index_max', index, 'UV max ', ''), sun('sunrise', index), sun('sunset', index)]
+      .filter(function(part) { return !!part; }).join(', ');
   }
 
-  if (tf.type === 'daily' && data.daily) {
-    var daily = data.daily;
-    var index = Math.max(0, Math.min(tf.offset, daily.time.length - 1));
-    var dayLabel = tf.offset === 0 ? 'Today' : (tf.offset === 1 ? 'Tomorrow' : daily.time[index]);
-    lines.push(dayLabel + ': ' + Math.round(daily.temperature_2m_min[index]) + '-' + Math.round(daily.temperature_2m_max[index]) + data.daily_units.temperature_2m_max + ', ' + weatherCodeText(daily.weather_code[index]));
-    lines.push('Rain chance ' + daily.precipitation_probability_max[index] + data.daily_units.precipitation_probability_max);
-    if (daily.precipitation_sum[index] > 0) {
-      lines.push('Precipitation ' + daily.precipitation_sum[index] + data.daily_units.precipitation_sum);
+  if (tf.type === 'current' || (tf.type === 'daily' && tf.offset === 0 && !tf.count)) {
+    var now = details(current, 'current');
+    if (now) lines.push('Now: ' + now);
+    var summary = day(todayIndex);
+    if (summary) lines.push('Today: ' + summary);
+  } else if (tf.type === 'daily') {
+    var start = todayIndex + tf.offset;
+    var count = tf.count || 1;
+    for (var d = start; d < start + count && daily.time && d < daily.time.length; d++) {
+      if (d < 0) continue;
+      var forecast = day(d);
+      if (forecast) lines.push((!tf.count && tf.offset === 1 ? 'Tomorrow' : daily.time[d]) + ': ' + forecast);
     }
-    return lines.join('\n');
-  }
-
-  if (tf.type === 'hourly' && data.hourly) {
-    var target = new Date();
-    target.setTime(target.getTime() + tf.offset * 60 * 60 * 1000);
-    var hIndex = findHourlyIndex(data.hourly, target);
-    if (hIndex === -1) {
-      return lines.join('\n') + '\nForecast unavailable for requested time.';
+  } else if (tf.type === 'hourly') {
+    var hIndex = findHourlyIndex(hourly, localNow + tf.offset * 3600000);
+    if (hIndex !== -1) {
+      for (var h = Math.max(0, hIndex - 1); h <= Math.min(hourly.time.length - 1, hIndex + 2); h++) {
+        var hour = details(hourly, 'hourly', h);
+        if (hour) lines.push(hourly.time[h].replace('T', ' ') + (h === hIndex ? ' (requested)' : '') + ': ' + hour);
+      }
     }
-    var hourTime = new Date(data.hourly.time[hIndex]);
-    lines.push('At ' + hourTime.getHours() + ':00: ' + Math.round(data.hourly.temperature_2m[hIndex]) + data.hourly_units.temperature_2m + ', ' + weatherCodeText(data.hourly.weather_code[hIndex]));
-    lines.push('Rain chance ' + data.hourly.precipitation_probability[hIndex] + data.hourly_units.precipitation_probability + ', humidity ' + data.hourly.relative_humidity_2m[hIndex] + data.hourly_units.relative_humidity_2m);
-    return lines.join('\n');
   }
-
-  return lines.join('\n') + '\nWeather data unavailable.';
+  if (lines.length === 1) lines.push('Weather data unavailable for requested time.');
+  return lines.join('\n');
 }
 
 function resolvePlaceCoordinates(place, generation, callback) {
@@ -1849,15 +1913,17 @@ function runWeatherTool(weather, generation, callback) {
   var place = weather.place ? String(weather.place).replace(/^\s+|\s+$/g, '') : '';
   var timeframe = weather.timeframe || 'now';
   function doFetch(lat, lon, resolvedPlace) {
+    var units = weatherUnitSettings();
     var request = new XMLHttpRequest();
     trackRequest(request, generation);
     var url = OPENMETEO_FORECAST_URL +
       '?latitude=' + encodeURIComponent(lat) +
       '&longitude=' + encodeURIComponent(lon) +
-      '&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m' +
-      '&hourly=temperature_2m,relative_humidity_2m,weather_code,precipitation_probability' +
-      '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max' +
-      '&timezone=auto&forecast_days=7';
+      '&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m,wind_direction_10m' +
+      '&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,precipitation_probability,precipitation,wind_speed_10m,wind_direction_10m,uv_index' +
+      '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,uv_index_max,sunrise,sunset' +
+      '&temperature_unit=' + units.temperature + '&wind_speed_unit=' + units.wind +
+      '&precipitation_unit=' + units.precipitation + '&timezone=auto&forecast_days=7';
 
     request.open('GET', url, true);
     request.setRequestHeader('Accept', 'application/json');
@@ -2620,6 +2686,7 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
     }
 
     fallbackStarted = true;
+    sendToWatch({ Status: 'Retrying response...' }, currentRequestId);
     debugLog('stream fallback to non-stream reason=' + reason + ' responseLen=' + (request.responseText || '').length + ' fullContentLen=' + fullContent.length);
     untrackRequest(request);
     request._cancelled = true;
@@ -4029,16 +4096,17 @@ function addTimelinePin(timeline, generation, executionId, callback) {
 // ---- Custom speech-to-text ----
 // The watch streams its microphone here (SDK 4.44 Microphone API). When the user presses SELECT
 // the watch sends VoiceEnd=1, and the recording is sent to an audio-capable OpenRouter model.
-var voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, waitTimer: null, request: null };
+var voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, recordingId: null, waitTimer: null, request: null };
 
 function resetVoiceState() {
-  if (voiceState.waitTimer) {
-    clearTimeout(voiceState.waitTimer);
+  var previous = voiceState;
+  voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, recordingId: null, waitTimer: null, request: null };
+  if (previous.waitTimer) {
+    clearTimeout(previous.waitTimer);
   }
-  if (voiceState.request) {
-    try { voiceState.request.abort(); } catch (err) {}
+  if (previous.request) {
+    try { previous.request.abort(); } catch (err) {}
   }
-  voiceState = { chunks: [], sampleCount: 0, streaming: false, decision: null, waitTimer: null, request: null };
 }
 
 function encodeWav(chunks, sampleCount, sampleRate) {
@@ -4110,9 +4178,15 @@ function cleanTranscript(text) {
   return watchSafeText(clip(cleaned, VOICE_TRANSCRIPT_CHARS));
 }
 
+// Only voice results carry this recording ID. Chat request IDs are separate.
+function sendVoiceResult(payload) {
+  if (voiceState.recordingId !== null) payload.RequestId = voiceState.recordingId;
+  sendToWatch(payload);
+}
+
 function sendVoiceFailure(message, detail) {
   debugLog('Voice transcription failed: ' + (detail || message));
-  sendToWatch({ VoiceFailed: message });
+  sendVoiceResult({ VoiceFailed: message });
 }
 
 var OPENROUTER_TRANSCRIPTION_URL = 'https://openrouter.ai/api/v1/audio/transcriptions';
@@ -4155,7 +4229,7 @@ function transcribeVoice(audio, seconds) {
         sendVoiceFailure("Didn't catch that");
         return;
       }
-      sendToWatch({ VoiceTranscript: transcript });
+      sendVoiceResult({ VoiceTranscript: transcript });
     } catch (err) {
       sendVoiceFailure('Bad transcript', err.message);
     }
@@ -4210,18 +4284,19 @@ function finishVoiceIfReady() {
   if (decision === 'prompt' && voiceDirectEnabled()) {
     debugLog('Voice direct to chat model seconds=' + seconds);
     pendingVoicePrompt = { audio: audio, at: Date.now() };
-    sendToWatch({ VoiceTranscript: VOICE_PROMPT_TEXT });
+    sendVoiceResult({ VoiceTranscript: VOICE_PROMPT_TEXT });
     return;
   }
   transcribeVoice(audio, seconds);
 }
 
 // decision: null = throw the recording away, 'prompt' = new message, 'choice' = choice answer.
-function handleVoiceEnd(decision) {
+function handleVoiceEnd(decision, recordingId) {
   if (!decision) {
     resetVoiceState();
     return;
   }
+  voiceState.recordingId = recordingId === undefined ? null : recordingId;
   voiceState.decision = decision;
   if (voiceState.streaming) {
     // The last audio arrives before audiostreamstop. Don't wait forever if it never comes.
@@ -4327,6 +4402,7 @@ Pebble.addEventListener('audiostreamstop', function() {
 
 Pebble.addEventListener('ready', function() {
   console.log('PebbleKit JS ready');
+  debugLog('Phone companion started');
   sendStatsToWatch();
   sendToolStatesToWatch();
   refreshRemainingCredits();
@@ -4335,7 +4411,7 @@ Pebble.addEventListener('ready', function() {
 Pebble.addEventListener('appmessage', function(e) {
   if (e.payload && e.payload.VoiceEnd !== undefined) {
     var voiceEnd = Number(e.payload.VoiceEnd);
-    handleVoiceEnd(voiceEnd === 1 ? 'prompt' : voiceEnd === 2 ? 'choice' : null);
+    handleVoiceEnd(voiceEnd === 1 ? 'prompt' : voiceEnd === 2 ? 'choice' : null, e.payload.RequestId);
     return;
   }
 
@@ -4504,6 +4580,7 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     EnableSearch: getBoolSetting('EnableSearch', false),
     EnableScrape: getBoolSetting('EnableScrape', false),
     EnableWeather: getBoolSetting('EnableWeather', true),
+    WeatherUnits: normalizeWeatherUnits(getSetting('WeatherUnits', 'metric')),
     EnableChoice: getBoolSetting('EnableChoice', true),
     EnableTimeline: getBoolSetting('EnableTimeline', true),
     EnableHealth: getBoolSetting('EnableHealth', false),

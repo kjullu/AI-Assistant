@@ -84,11 +84,16 @@ static bool s_start_dictation_on_appear;
 static bool s_show_first_run;
 static bool s_show_home = true;
 static bool s_request_active;
+#define CHAT_REPLY_WAIT_MS 90000
+static AppTimer *s_chat_reply_timer;
+static void stop_chat_reply_timer(void);
+static bool arm_chat_reply_timer(void);
 static bool s_auto_follow_chat = true;
 static bool s_cancel_pending;
 static bool s_clear_session_pending;
 static uint32_t s_active_request_id;
 static bool s_response_started;
+static int32_t s_next_response_chunk;
 static bool s_show_settings;
 static bool s_show_sessions;
 static bool s_show_new_session;
@@ -140,11 +145,16 @@ static bool s_voice_direct;
 static bool s_voice_stream_started;
 static AppTimer *s_voice_timer;
 static AppTimer *s_voice_tick_timer;
+#define VOICE_RESPONSE_WAIT_MS 60000
+static AppTimer *s_voice_response_timer;
+static uint32_t s_voice_attempt_id;
 static time_t s_voice_started_at;
 static uint8_t s_voice_level;
 static char s_voice_failure[48];
 static void set_voice_ui(VoiceUi ui);
 static void show_voice_failure(const char *message);
+static void fail_voice_delivery(const char *message);
+static void voice_cancel_timers(void);
 #endif
 static void start_voice_input(bool for_choice);
 #ifdef HAS_MIC_STREAM
@@ -1056,6 +1066,7 @@ static bool send_simple_command(uint32_t key, const char *failure_status) {
 }
 
 static void clear_watch_session(void) {
+  stop_chat_reply_timer();
   s_last_prompt[0] = '\0';
   s_assistant_response[0] = '\0';
   s_chat_history[0] = '\0';
@@ -1066,6 +1077,7 @@ static void clear_watch_session(void) {
   s_show_new_session = false;
   s_request_active = false;
   s_response_started = false;
+  s_next_response_chunk = 0;
   s_auto_follow_chat = true;
   update_display("Ready");
 }
@@ -1635,6 +1647,7 @@ static void send_health_data(const char *range, uint32_t request_id) {
 
 // Rebuild the full screen text whenever prompt, status, or response changes.
 static void update_display(const char *status) {
+  if (!s_request_active && !s_cancel_pending) stop_chat_reply_timer();
   //AI: The status is shown in the top status bar, while messages live in the scroll layer.
   utf8_copy(s_status_text, sizeof(s_status_text), status ? status : "Ready");
   status_bar_layer_set_separator_mode(s_status_layer, StatusBarLayerSeparatorModeDotted);
@@ -1661,6 +1674,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
     s_active_request_id = 1;
   }
   s_response_started = false;
+  s_next_response_chunk = 0;
   if (s_chat_history[0] != '\0') {
     append_chat_history("\n\n");
   }
@@ -1669,7 +1683,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
   append_chat_history("\n\nAI\n");
   s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
   update_display(status);
-  return true;
+  return arm_chat_reply_timer();
 }
 
 // Send the user's dictated text to PebbleKit JS on the phone.
@@ -1699,8 +1713,66 @@ static void send_prompt(const char *prompt) {
   }
 }
 
+// A final empty packet can arrive after earlier text packets were lost.
+static bool accept_response_chunk(int32_t index) {
+  // Chunk zero also starts a replacement reply after a tool round or fallback.
+  if (index != 0 && index != s_next_response_chunk) {
+    const char *message = "Reply interrupted. Reconnect and try again.";
+    utf8_copy(s_assistant_response, sizeof(s_assistant_response), message);
+    append_chat_history("\n\n");
+    append_chat_history(message);
+    s_request_active = false;
+    s_cancel_pending = false;
+    if (++s_active_request_id == 0) s_active_request_id = 1;
+    update_display("Reply interrupted");
+    vibes_double_pulse();
+    return false;
+  }
+  s_next_response_chunk = index + 1;
+  return true;
+}
+
+static void stop_chat_reply_timer(void) {
+  if (s_chat_reply_timer) {
+    app_timer_cancel(s_chat_reply_timer);
+    s_chat_reply_timer = NULL;
+  }
+}
+
+static void chat_reply_timeout(void *context) {
+  s_chat_reply_timer = NULL;
+  if (!s_request_active && !s_cancel_pending) return;
+  // Best effort only. Recovery on the watch never depends on phone delivery.
+  if (!s_cancel_pending) send_simple_command(MESSAGE_KEY_CancelRequest, "Cancel failed");
+  s_request_active = false;
+  s_cancel_pending = false;
+  if (++s_active_request_id == 0) s_active_request_id = 1;
+  close_choice_screen();
+  const char *message = "Reply timed out. Try again.";
+  utf8_copy(s_assistant_response, sizeof(s_assistant_response), message);
+  append_chat_history("\n\n");
+  append_chat_history(message);
+  update_display("Reply timed out");
+  vibes_double_pulse();
+}
+
+static bool arm_chat_reply_timer(void) {
+  stop_chat_reply_timer();
+  s_chat_reply_timer = app_timer_register(CHAT_REPLY_WAIT_MS, chat_reply_timeout, NULL);
+  if (!s_chat_reply_timer) {
+    chat_reply_timeout(NULL);
+    return false;
+  }
+  return true;
+}
+
 // Receive status, errors, and response chunks from PebbleKit JS.
 static void inbox_received_callback(DictionaryIterator *iter, void *context) {
+  if (dict_find(iter, MESSAGE_KEY_CompanionReady)) {
+    // Startup is not proof that the active prompt was lost. The watch timer
+    // handles a restarted companion even when every startup message is dropped.
+    return;
+  }
   //USR: Define suff...
   //AI: Look up any known fields that may be present in this incoming AppMessage.
   Tuple *status_tuple = dict_find(iter, MESSAGE_KEY_Status);
@@ -1728,12 +1800,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
   if (voice_transcript_tuple || voice_failed_tuple) {
-    bool was_transcribing = s_voice_transcribing;
-    s_voice_transcribing = false;
-    if (!was_transcribing) {
-      // The user cancelled while the phone was still transcribing.
+    // Voice replies use RequestId independently of chat turns. Check it before
+    // touching the current attempt or its watchdog, including after a retry.
+    if (!s_voice_transcribing || !request_id_tuple ||
+        request_id_tuple->value->uint32 != s_voice_attempt_id) {
       return;
     }
+    s_voice_transcribing = false;
+    voice_cancel_timers();
     if (voice_transcript_tuple && voice_transcript_tuple->length > 1) {
       set_voice_ui(VoiceUiHidden);
       handle_voice_transcript(voice_transcript_tuple->value->cstring, s_voice_for_choice);
@@ -1762,6 +1836,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (s_cancel_pending && request_id_tuple) {
     return;
   }
+  // Only activity for this request can extend the deadline, never home stats.
+  if (request_id_tuple && s_request_active &&
+      (status_tuple || response_tuple || error_tuple || tool_activity_tuple || health_request_tuple)) {
+    if (!arm_chat_reply_timer()) return;
+  }
+
 
   if (health_request_tuple && request_id_tuple) {
     send_health_data(health_request_tuple->value->cstring, request_id_tuple->value->uint32);
@@ -1781,6 +1861,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   //USR: if response_tuple is true do:
   //AI: If the message includes assistant text, process it.
   if (response_tuple) {
+    if (chunk_index_tuple && !accept_response_chunk(chunk_index_tuple->value->int32)) {
+      return;
+    }
     //USR: se if AI respnse
     //AI: A chunk index means the reply is arriving in multiple AppMessages.
     if (chunk_index_tuple) {
@@ -1937,7 +2020,37 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   update_display(status);
 }
 
+static void phone_connection_changed(bool connected) {
+  if (connected) return;
+#ifdef HAS_MIC_STREAM
+  s_phone_ready = false;
+#endif
+  if (!s_request_active && !s_cancel_pending) return;
+
+  s_request_active = false;
+  s_cancel_pending = false;
+  // Invalidate queued replies from the interrupted turn before reconnecting.
+  if (++s_active_request_id == 0) s_active_request_id = 1;
+  close_choice_screen();
+  append_chat_history("\n\nConnection lost. Reconnect and try again.");
+  update_display("Phone disconnected");
+  vibes_double_pulse();
+}
+
 static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+#ifdef HAS_MIC_STREAM
+  Tuple *voice_end = dict_find(iter, MESSAGE_KEY_VoiceEnd);
+  Tuple *voice_id = dict_find(iter, MESSAGE_KEY_RequestId);
+  if (voice_end) {
+    if (voice_end->value->uint8 && s_voice_transcribing && voice_id &&
+        voice_id->value->uint32 == s_voice_attempt_id) {
+      fail_voice_delivery("Couldn't reach phone");
+    }
+    return;
+  }
+#endif
+  Tuple *request_id = dict_find(iter, MESSAGE_KEY_RequestId);
+  if (request_id && request_id->value->uint32 != s_active_request_id) return;
   if (dict_find(iter, MESSAGE_KEY_Prompt)) {
     s_request_active = false;
     update_display("Send failed");
@@ -1955,6 +2068,8 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
 }
 
 static void outbox_sent_callback(DictionaryIterator *iter, void *context) {
+  Tuple *request_id = dict_find(iter, MESSAGE_KEY_RequestId);
+  if (request_id && request_id->value->uint32 != s_active_request_id) return;
   if (dict_find(iter, MESSAGE_KEY_CancelRequest)) {
     s_cancel_pending = false;
     s_active_request_id++;
@@ -2043,6 +2158,7 @@ static bool send_voice_end(bool transcribe) {
     return false;
   }
   dict_write_uint8(iter, MESSAGE_KEY_VoiceEnd, transcribe ? (s_voice_for_choice ? 2 : 1) : 0);
+  dict_write_uint32(iter, MESSAGE_KEY_RequestId, s_voice_attempt_id);
   dict_write_end(iter);
   return app_message_outbox_send() == APP_MSG_OK;
 }
@@ -2127,6 +2243,10 @@ static void voice_layer_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void voice_cancel_timers(void) {
+  if (s_voice_response_timer) {
+    app_timer_cancel(s_voice_response_timer);
+    s_voice_response_timer = NULL;
+  }
   if (s_voice_timer) {
     app_timer_cancel(s_voice_timer);
     s_voice_timer = NULL;
@@ -2167,6 +2287,20 @@ static void voice_tick(void *context) {
   layer_mark_dirty(s_voice_layer);
 }
 
+// Never resend a transcription command: an ACK can be lost after the phone accepted it.
+static void fail_voice_delivery(const char *message) {
+  s_voice_transcribing = false;
+  send_voice_end(false); // Best effort: discard audio and abort phone-side transcription.
+  show_voice_failure(message);
+}
+
+static void voice_response_timeout(void *context) {
+  s_voice_response_timer = NULL;
+  if (s_voice_transcribing) {
+    fail_voice_delivery("Voice timed out");
+  }
+}
+
 // SELECT while recording: stop the mic and ask the phone for the transcript.
 static void finish_voice_recording(void) {
   if (!s_voice_listening) {
@@ -2176,11 +2310,15 @@ static void finish_voice_recording(void) {
   s_voice_listening = false;
   mic_stream_to_phone_stop();
   if (!send_voice_end(true)) {
-    show_voice_failure("Couldn't reach phone");
+    fail_voice_delivery("Couldn't reach phone");
     return;
   }
   s_voice_transcribing = true;
   set_voice_ui(VoiceUiWorking);
+  s_voice_response_timer = app_timer_register(VOICE_RESPONSE_WAIT_MS, voice_response_timeout, NULL);
+  if (!s_voice_response_timer) {
+    fail_voice_delivery("Voice timer failed");
+  }
 }
 
 // BACK while recording or transcribing: drop the audio.
@@ -2207,6 +2345,8 @@ static void voice_stream_started(void *context) {
 }
 
 static void voice_stream_stopped(MicStreamStopReason reason, void *context) {
+  // A delayed stop notification must not tear down the transcription watchdog.
+  if (!s_voice_listening) return;
   voice_cancel_timers();
   bool was_started = s_voice_stream_started;
   s_voice_listening = false;
@@ -2252,6 +2392,7 @@ static void start_voice_input(bool for_choice) {
   }
   if (s_voice_openrouter && !s_voice_listening && !s_voice_transcribing) {
     voice_cancel_timers();
+    if (++s_voice_attempt_id == 0) s_voice_attempt_id = 1;
     s_voice_for_choice = for_choice;
     s_voice_stream_started = false;
     MicStreamStartResult result = mic_stream_to_phone_start(
@@ -2780,6 +2921,9 @@ static void init(void) {
     s_response_vibe = (ResponseVibe)persist_read_int(PERSIST_KEY_RESPONSE_VIBE);
   }
   window_stack_push(s_window, true); //USR: Make our window appear on the screen
+  connection_service_subscribe((ConnectionHandlers) {
+    .pebble_app_connection_handler = phone_connection_changed
+  });
   //AI: Push the window onto Pebble's window stack so it appears on screen, with animation.
 
   if (s_show_first_run) {
@@ -2794,7 +2938,10 @@ static void init(void) {
 
 // Release resources before the app exits.
 static void deinit(void) {
+  stop_chat_reply_timer();
+  connection_service_unsubscribe();
 #ifdef HAS_MIC_STREAM
+  voice_cancel_timers();
   mic_stream_to_phone_stop();
 #endif
   // Tear down runtime objects created during init().
