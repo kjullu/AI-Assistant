@@ -1439,10 +1439,15 @@ function buildMessages() {
     start++;
   }
   for (var i = start; i < conversationHistory.length; i++) {
-    messages.push(conversationHistory[i]);
+    var entry = conversationHistory[i];
+    if (entry.role === 'user' && entry.localTime) {
+      // Store time with its turn without consuming a separate history slot.
+      messages.push({ role: 'system', content: entry.localTime });
+      messages.push({ role: 'user', content: entry.content });
+    } else {
+      messages.push(entry);
+    }
   }
-  // Keep the reusable conversation prefix ahead of the changing timestamp.
-  messages.push({ role: 'system', content: 'Current local time is ' + new Date().toString() + '.' });
   return messages;
 }
 
@@ -3289,7 +3294,8 @@ function callOpenRouter(prompt, requestId) {
   sendStatsToWatch();
 
   var baseMessages = buildMessages();
-  var userMessage = { role: 'user', content: prompt };
+  var localTime = 'Current local time is ' + new Date().toString() + '.';
+  var userMessage = { role: 'user', content: prompt, localTime: localTime };
   var voiceAudio = takePendingVoicePrompt(prompt);
   var modelUserMessage = voiceAudio ? {
     role: 'user',
@@ -3297,7 +3303,7 @@ function callOpenRouter(prompt, requestId) {
       { type: 'text', text: 'The user sent this voice message. Listen to it and reply to what they said.' },
       { type: 'input_audio', input_audio: { data: voiceAudio, format: 'wav' } }
     ]
-  } : userMessage;
+  } : { role: 'user', content: prompt };
   // History keeps the short placeholder; the audio is only sent for this turn.
   rememberConversationMessages([userMessage]);
   saveCurrentSessionToConversationHistory();
@@ -3305,7 +3311,7 @@ function callOpenRouter(prompt, requestId) {
     prompt: prompt,
     requestId: currentRequestId,
     generation: generation,
-    messages: baseMessages.concat([modelUserMessage]),
+    messages: baseMessages.concat([{ role: 'system', content: localTime }, modelUserMessage]),
     tools: buildToolDefinitions(),
     toolCallCount: 0,
     toolRounds: 0,
