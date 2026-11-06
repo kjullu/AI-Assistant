@@ -1,3 +1,10 @@
+# Unreleased
+
+- Add experimental, off-by-default Pebble plugin tools: list installed plugins, read their data, and run their actions after the user confirms on the watch.
+- Keep plugin notifications behind their own setting.
+- Add a Pebble Plugins section to phone settings with a toggle for each installed plugin.
+- Declare the app's permissions in `package.json` for builds packed with `pack-plugin-pbw.py`.
+
 # 0.4.1
 
 - Update the app name to AI Assistant.

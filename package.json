@@ -27,6 +27,31 @@
       "diorite",
       "emery"
     ],
+    "usesPermissions": [
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "openrouter.ai",
+            "api.search.brave.com",
+            "api.firecrawl.dev",
+            "open-meteo.com",
+            "nominatim.openstreetmap.org",
+            "timeline-api.getpebble.com",
+            "api.frankfurter.dev"
+          ]
+        }
+      },
+      "Location",
+      "Calendar",
+      "Timeline",
+      "Health",
+      "Notifications",
+      "ReadMusic",
+      "ControlMusic",
+      "LaunchApps",
+      "FindMyPhone"
+    ],
     "watchapp": {
       "watchface": false
     },
@@ -82,7 +107,10 @@
       "OpenRouterSort",
       "ToolActivity",
       "ResetFirstRunNotice",
-      "ReplayPrompt"
+      "ReplayPrompt",
+      "EnablePlugins",
+      "EnablePluginActions",
+      "EnablePluginNotifications"
     ],
     "resources": {
       "media": []
