@@ -112,6 +112,52 @@ function requestIsCurrent(request) {
   return !request._cancelled && request._generation === requestGeneration;
 }
 
+// Nominatim and FOSSGIS OSRM allow at most one request per second, so each
+// service has a queue that sends at least SERVICE_REQUEST_GAP_MS apart, measured
+// from the last request actually sent. Cancelled or stale requests are dropped
+// without using a slot, and the setting is rechecked right before sending.
+var SERVICE_REQUEST_GAP_MS = 1000;
+var serviceQueues = {};
+
+function sendRateLimited(request, service, settingKey, callback) {
+  var queue = serviceQueues[service];
+  if (!queue) {
+    queue = serviceQueues[service] = { items: [], lastSent: 0, timer: null };
+  }
+  queue.items.push({ request: request, settingKey: settingKey, callback: callback });
+  pumpServiceQueue(service);
+}
+
+function pumpServiceQueue(service) {
+  var queue = serviceQueues[service];
+  if (queue.timer) return;
+  while (queue.items.length) {
+    var item = queue.items[0];
+    if (!requestIsCurrent(item.request)) {
+      queue.items.shift();
+      untrackRequest(item.request);
+      continue;
+    }
+    if (item.settingKey && !getBoolSetting(item.settingKey, false)) {
+      queue.items.shift();
+      untrackRequest(item.request);
+      item.callback(null, 'OpenStreetMap access was disabled before the request was sent.');
+      continue;
+    }
+    var wait = queue.lastSent + SERVICE_REQUEST_GAP_MS - Date.now();
+    if (wait > 0) {
+      queue.timer = setTimeout(function() {
+        queue.timer = null;
+        pumpServiceQueue(service);
+      }, wait);
+      return;
+    }
+    queue.items.shift();
+    queue.lastSent = Date.now();
+    item.request.send();
+  }
+}
+
 function clearPendingChoice() {
   if (pendingChoiceTimer) {
     clearTimeout(pendingChoiceTimer);
@@ -1843,7 +1889,7 @@ function reverseGeocode(lat, lon, generation, callback) {
     callback(null);
   };
 
-  request.send();
+  sendRateLimited(request, 'nominatim', null, callback);
 }
 
 function runLocationTool(generation, callback) {
@@ -1987,7 +2033,7 @@ function runNearbyPlacesTool(args, generation, callback) {
       untrackRequest(request);
       if (requestIsCurrent(request)) callback(null, 'OpenStreetMap nearby search timed out.');
     };
-    request.send();
+    sendRateLimited(request, 'nominatim', 'EnableOpenStreetMap', callback);
   }, function(err) {
     if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
   }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
@@ -2081,7 +2127,7 @@ function requestRoute(mode, startLat, startLon, originLabel, destination, destin
     untrackRequest(request);
     if (requestIsCurrent(request)) callback(null, 'Directions lookup timed out.');
   };
-  request.send();
+  sendRateLimited(request, 'osrm', 'EnableOpenStreetMap', callback);
 }
 
 function coordinateProvided(value) {
@@ -2110,10 +2156,6 @@ function runDirectionsTool(args, generation, callback) {
   }
   args = args || {};
   var destination = String(args && args.destination || '').replace(/^\s+|\s+$/g, '');
-  if (!destination) {
-    callback(null, 'No directions destination provided.');
-    return;
-  }
   var modeName = String(args.mode || 'walking').replace(/^\s+|\s+$/g, '').toLowerCase() || 'walking';
   var mode = Object.prototype.hasOwnProperty.call(DIRECTION_MODES, modeName) ? DIRECTION_MODES[modeName] : null;
   if (!mode) {
@@ -2153,6 +2195,11 @@ function runDirectionsTool(args, generation, callback) {
       callback(null, 'Directions destination coordinates are invalid.');
       return;
     }
+    if (!destination) destination = 'coordinates (' + endLat + ', ' + endLon + ')';
+  }
+  if (!destination) {
+    callback(null, 'No directions destination provided.');
+    return;
   }
 
   function continueFromOrigin(startLat, startLon, originLabel) {
@@ -2220,7 +2267,7 @@ function runDirectionsTool(args, generation, callback) {
       untrackRequest(search);
       if (requestIsCurrent(search)) callback(null, 'Destination search timed out.');
     };
-    search.send();
+    sendRateLimited(search, 'nominatim', 'EnableOpenStreetMap', callback);
   }
 
   if (hasOriginLat && hasOriginLon) {
@@ -2274,7 +2321,7 @@ function runDirectionsTool(args, generation, callback) {
       untrackRequest(originSearch);
       if (requestIsCurrent(originSearch)) callback(null, 'Origin search timed out.');
     };
-    originSearch.send();
+    sendRateLimited(originSearch, 'nominatim', 'EnableOpenStreetMap', callback);
     return;
   }
 

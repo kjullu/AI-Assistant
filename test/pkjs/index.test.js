@@ -1568,3 +1568,112 @@ test('directions reject an unknown travel mode before GPS or network access', ()
   assert.equal(gpsUsed, false);
   assert.equal(runtime.requests.length, 0);
 });
+
+test('directions accept destination coordinates without a destination name', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  let result;
+  let error;
+  runtime.context.runDirectionsTool({
+    originLatitude: 55.6761, originLongitude: 12.5683,
+    destinationLatitude: 55.68, destinationLongitude: 12.575
+  }, runtime.context.requestGeneration, (content, problem) => { result = content; error = problem; });
+  assert.equal(error, undefined);
+  const route = runtime.requests.find(request => request.url && request.url.includes('routing.openstreetmap.de'));
+  assert.ok(route.sent);
+  route.status = 200;
+  route.responseText = JSON.stringify({ code: 'Ok', routes: [{ distance: 500, duration: 300, legs: [{ steps: [] }] }] });
+  route.onload();
+  assert.match(result, /^Walking directions to coordinates \(55\.68, 12\.575\)/);
+});
+
+test('back-to-back Nominatim lookups are spaced at least one second apart', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  const clock = useFakeClock(runtime, 10000);
+  runtime.context.runDirectionsTool({ origin: 'Station', destination: 'Park' },
+    runtime.context.requestGeneration, () => {});
+  const originSearch = runtime.requests.find(request => /q=Station/.test(request.url || ''));
+  assert.ok(originSearch.sent);
+  originSearch.status = 200;
+  originSearch.responseText = JSON.stringify([{ lat: '55.67', lon: '12.56', display_name: 'Station' }]);
+  originSearch.onload();
+
+  const destinationSearch = runtime.requests.find(request => /q=Park/.test(request.url || ''));
+  assert.ok(destinationSearch);
+  assert.equal(destinationSearch.sent, undefined);
+  assert.equal(runtime.timers.length, 1);
+  clock.now = 11000;
+  runtime.timers.shift()();
+  assert.equal(destinationSearch.sent, true);
+});
+
+function useFakeClock(runtime, start) {
+  const clock = { now: start };
+  class FakeDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [clock.now])); }
+    static now() { return clock.now; }
+  }
+  runtime.context.Date = FakeDate;
+  return clock;
+}
+
+function queueLookup(runtime, label) {
+  const request = new runtime.context.XMLHttpRequest();
+  request.open('GET', 'https://nominatim.openstreetmap.org/search?q=' + label);
+  runtime.context.trackRequest(request, runtime.context.requestGeneration);
+  runtime.context.sendRateLimited(request, 'nominatim', null, () => {});
+  return request;
+}
+
+test('a late queue timer still sends only one request per second', () => {
+  const runtime = createRuntime({});
+  const clock = useFakeClock(runtime, 10000);
+  const sendTimes = [];
+  const first = queueLookup(runtime, 'a');
+  assert.equal(first.sent, true);
+  const second = queueLookup(runtime, 'b');
+  const third = queueLookup(runtime, 'c');
+  for (const request of [second, third]) {
+    const send = request.send;
+    request.send = function() { sendTimes.push(clock.now); send.call(this); };
+  }
+
+  clock.now = 13000;
+  runtime.timers.shift()();
+  assert.deepEqual(sendTimes, [13000]);
+  assert.equal(third.sent, undefined);
+  assert.equal(runtime.timers.length, 1);
+  clock.now = 14000;
+  runtime.timers.shift()();
+  assert.deepEqual(sendTimes, [13000, 14000]);
+});
+
+test('cancelled queued requests do not delay later lookups', () => {
+  const runtime = createRuntime({});
+  const clock = useFakeClock(runtime, 10000);
+  queueLookup(runtime, 'first');
+  for (let i = 0; i < 5; i++) {
+    const request = queueLookup(runtime, 'cancelled' + i);
+    request._cancelled = true;
+  }
+  clock.now = 11000;
+  runtime.timers.shift()();
+  assert.equal(runtime.timers.length, 0);
+  const fresh = queueLookup(runtime, 'fresh');
+  assert.equal(fresh.sent, true);
+});
+
+test('turning OpenStreetMap off while GPS is pending stops the lookup', () => {
+  const runtime = createRuntime({ EnableOpenStreetMap: '1' });
+  let deliverPosition;
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) { deliverPosition = success; }
+  };
+  let error;
+  runtime.context.runNearbyPlacesTool({ query: 'supermarket' },
+    runtime.context.requestGeneration, (content, problem) => { error = problem; });
+  runtime.context.localStorage.setItem('EnableOpenStreetMap', '0');
+  deliverPosition({ coords: { latitude: 55.6761, longitude: 12.5683 } });
+
+  assert.equal(runtime.requests.some(request => request.sent), false);
+  assert.match(error, /OpenStreetMap access was disabled/);
+});
