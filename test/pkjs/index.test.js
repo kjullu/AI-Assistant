@@ -6,18 +6,6 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../src/pkjs/index.js'), 'utf8');
 
-test('each new phone runtime announces startup before ordinary stats and settings', () => {
-  const first = createRuntime();
-  first.listeners.ready();
-  assert.equal(first.sentMessages[0].CompanionReady, 1);
-  const restarted = createRuntime();
-  restarted.listeners.ready();
-  assert.equal(restarted.sentMessages[0].CompanionReady, 1);
-  assert.match(restarted.storage.get('DebugLog'), /Phone companion started/);
-  restarted.context.sendToolStatesToWatch();
-  assert.equal(restarted.sentMessages.filter(message => message.CompanionReady).length, 1);
-});
-
 function createRuntime(settings = {}) {
   const listeners = {};
   const requests = [];
@@ -1113,6 +1101,32 @@ test('Health instructions are included only when enabled', () => {
   assert.match(promptText, /Use Health/);
   assert.match(promptText, /average\/minimum\/maximum heart rate/);
   assert.equal(createRuntime({ EnableHealth: '1' }).context.buildToolDefinitions().some(tool => tool.function.name === 'health'), true);
+});
+
+test('fallback refreshes the watch deadline before a slow valid response', () => {
+  const runtime = createRuntime();
+  let now = 0;
+  let deadline = 90000;
+  runtime.setSendHandler((dict, success) => {
+    if (dict.RequestId === 7 && (dict.Status || dict.AssistantResponse !== undefined)) {
+      deadline = now + 90000;
+    }
+    success();
+  });
+  prompt(runtime, 'Take your time', 7);
+  const streaming = modelRequests(runtime)[0];
+  now = 1000;
+  streaming.readyState = 3;
+  streaming.responseText = 'data: ' + JSON.stringify({ choices: [{ delta: { reasoning: 'Working' } }] }) + '\n\n';
+  streaming.onreadystatechange();
+  now = 60000;
+  streaming.ontimeout();
+  assert.ok(runtime.sentMessages.some(message => message.Status === 'Retrying response...' && message.RequestId === 7));
+  assert.equal(deadline, 150000);
+  now = 100000;
+  assert.ok(now < deadline, 'fallback remains within the refreshed watch deadline');
+  normalResponse(modelRequests(runtime)[1], { reply: 'Ready.' });
+  assert.ok(runtime.sentMessages.some(message => message.AssistantResponse === 'Ready.' && message.RequestId === 7));
 });
 
 test('stream fallback can continue into a tool round', () => {

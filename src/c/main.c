@@ -84,6 +84,10 @@ static bool s_start_dictation_on_appear;
 static bool s_show_first_run;
 static bool s_show_home = true;
 static bool s_request_active;
+#define CHAT_REPLY_WAIT_MS 90000
+static AppTimer *s_chat_reply_timer;
+static void stop_chat_reply_timer(void);
+static bool arm_chat_reply_timer(void);
 static bool s_auto_follow_chat = true;
 static bool s_cancel_pending;
 static bool s_clear_session_pending;
@@ -1062,6 +1066,7 @@ static bool send_simple_command(uint32_t key, const char *failure_status) {
 }
 
 static void clear_watch_session(void) {
+  stop_chat_reply_timer();
   s_last_prompt[0] = '\0';
   s_assistant_response[0] = '\0';
   s_chat_history[0] = '\0';
@@ -1642,6 +1647,7 @@ static void send_health_data(const char *range, uint32_t request_id) {
 
 // Rebuild the full screen text whenever prompt, status, or response changes.
 static void update_display(const char *status) {
+  if (!s_request_active && !s_cancel_pending) stop_chat_reply_timer();
   //AI: The status is shown in the top status bar, while messages live in the scroll layer.
   utf8_copy(s_status_text, sizeof(s_status_text), status ? status : "Ready");
   status_bar_layer_set_separator_mode(s_status_layer, StatusBarLayerSeparatorModeDotted);
@@ -1677,7 +1683,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
   append_chat_history("\n\nAI\n");
   s_current_ai_response_start = s_chat_history + strlen(s_chat_history);
   update_display(status);
-  return true;
+  return arm_chat_reply_timer();
 }
 
 // Send the user's dictated text to PebbleKit JS on the phone.
@@ -1726,24 +1732,45 @@ static bool accept_response_chunk(int32_t index) {
   return true;
 }
 
-static void companion_restarted(void) {
+static void stop_chat_reply_timer(void) {
+  if (s_chat_reply_timer) {
+    app_timer_cancel(s_chat_reply_timer);
+    s_chat_reply_timer = NULL;
+  }
+}
+
+static void chat_reply_timeout(void *context) {
+  s_chat_reply_timer = NULL;
   if (!s_request_active && !s_cancel_pending) return;
+  // Best effort only. Recovery on the watch never depends on phone delivery.
+  if (!s_cancel_pending) send_simple_command(MESSAGE_KEY_CancelRequest, "Cancel failed");
   s_request_active = false;
   s_cancel_pending = false;
   if (++s_active_request_id == 0) s_active_request_id = 1;
   close_choice_screen();
-  const char *message = "Connection lost. Reconnect and try again.";
+  const char *message = "Reply timed out. Try again.";
   utf8_copy(s_assistant_response, sizeof(s_assistant_response), message);
   append_chat_history("\n\n");
   append_chat_history(message);
-  update_display("Request interrupted");
+  update_display("Reply timed out");
   vibes_double_pulse();
+}
+
+static bool arm_chat_reply_timer(void) {
+  stop_chat_reply_timer();
+  s_chat_reply_timer = app_timer_register(CHAT_REPLY_WAIT_MS, chat_reply_timeout, NULL);
+  if (!s_chat_reply_timer) {
+    chat_reply_timeout(NULL);
+    return false;
+  }
+  return true;
 }
 
 // Receive status, errors, and response chunks from PebbleKit JS.
 static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (dict_find(iter, MESSAGE_KEY_CompanionReady)) {
-    companion_restarted();
+    // Startup is not proof that the active prompt was lost. The watch timer
+    // handles a restarted companion even when every startup message is dropped.
     return;
   }
   //USR: Define suff...
@@ -1809,6 +1836,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (s_cancel_pending && request_id_tuple) {
     return;
   }
+  // Only activity for this request can extend the deadline, never home stats.
+  if (request_id_tuple && s_request_active &&
+      (status_tuple || response_tuple || error_tuple || tool_activity_tuple || health_request_tuple)) {
+    if (!arm_chat_reply_timer()) return;
+  }
+
 
   if (health_request_tuple && request_id_tuple) {
     send_health_data(health_request_tuple->value->cstring, request_id_tuple->value->uint32);
@@ -2905,6 +2938,7 @@ static void init(void) {
 
 // Release resources before the app exits.
 static void deinit(void) {
+  stop_chat_reply_timer();
   connection_service_unsubscribe();
 #ifdef HAS_MIC_STREAM
   voice_cancel_timers();

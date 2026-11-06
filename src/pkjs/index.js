@@ -2648,6 +2648,7 @@ function callModelStream(messages, tools, generation, callback, toolActivity) {
     }
 
     fallbackStarted = true;
+    sendToWatch({ Status: 'Retrying response...' }, currentRequestId);
     debugLog('stream fallback to non-stream reason=' + reason + ' responseLen=' + (request.responseText || '').length + ' fullContentLen=' + fullContent.length);
     untrackRequest(request);
     request._cancelled = true;
@@ -3817,8 +3818,6 @@ Pebble.addEventListener('audiostreamstop', function() {
 Pebble.addEventListener('ready', function() {
   console.log('PebbleKit JS ready');
   debugLog('Phone companion started');
-  // Requests from the previous JavaScript runtime cannot finish after restart.
-  sendToWatch({ CompanionReady: 1 });
   sendStatsToWatch();
   sendToolStatesToWatch();
   refreshRemainingCredits();
