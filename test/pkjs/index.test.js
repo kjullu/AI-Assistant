@@ -613,7 +613,7 @@ test('current-location weather uses phone coordinates without geocoding a place 
 
   assert.equal(error, null);
   assert.match(result, /Weather for Current location/);
-  assert.match(result, /Today: 13-21°C/);
+  assert.match(result, /Today: high 21°C, low 13°C/);
 });
 
 test('current-location weather respects the Location setting', () => {
@@ -2003,6 +2003,162 @@ test('trimming history keeps each retained user timestamp and the existing messa
   }
   const sessions = runtime.context.sessionsToText();
   assert.doesNotMatch(sessions, /Current local time is/);
+});
+
+function weatherRequest(runtime, timeframe = 'now') {
+  runtime.context.navigator.geolocation = {
+    getCurrentPosition(success) { success({ coords: { latitude: 55, longitude: 12 } }); }
+  };
+  let result;
+  let error;
+  runtime.context.runWeatherTool({ place: 'current location', timeframe }, runtime.context.requestGeneration,
+    (content, problem) => { result = content; error = problem; });
+  const request = runtime.requests.find(request => request.url.includes('/forecast'));
+  return {
+    request,
+    respond(data) {
+      request.status = 200;
+      request.responseText = JSON.stringify(data);
+      request.onload();
+      assert.equal(error, null);
+      return result;
+    }
+  };
+}
+
+function detailedWeather() {
+  return {
+    timezone: 'Asia/Tokyo', utc_offset_seconds: 32400,
+    current: { time: '2026-11-07T00:15', temperature_2m: 17.2, apparent_temperature: 15.4,
+      weather_code: 2, relative_humidity_2m: 73, wind_speed_10m: 12.4, wind_direction_10m: 315, precipitation: 0.5 },
+    daily: { time: ['2026-11-07', '2026-11-08', '2026-11-09'], temperature_2m_max: [21, 22, 23],
+      temperature_2m_min: [12, 13, 14], weather_code: [2, 3, 61], precipitation_probability_max: [70, 40, 90],
+      precipitation_sum: [2.5, 1, 4], uv_index_max: [4.5, 3, 2],
+      sunrise: ['2026-11-07T06:12', '2026-11-08T06:13', '2026-11-09T06:14'],
+      sunset: ['2026-11-07T16:40', '2026-11-08T16:39', '2026-11-09T16:38'] },
+    hourly: { time: ['2026-11-07T00:00', '2026-11-07T01:00', '2026-11-07T02:00', '2026-11-07T03:00', '2026-11-07T04:00'],
+      temperature_2m: [17, 16, 15, 14, 13], weather_code: [0, 1, 2, 3, 61],
+      apparent_temperature: [16, 15, 14, 13, 12], relative_humidity_2m: [73, 74, 75, 76, 77],
+      precipitation_probability: [10, 20, 30, 40, 50], precipitation: [0, 0.1, 0.2, 0.3, 0.4],
+      wind_speed_10m: [10, 11, 12, 13, 14], wind_direction_10m: [0, 45, 315, 270, 180], uv_index: [0, 0, 0, 0, 0] }
+  };
+}
+
+for (const [setting, language, imperial] of [
+  ['metric', 'en-US', false], ['imperial', 'da-DK', true],
+  ['automatic', 'en-US', false], ['automatic', 'en-LR', false], ['automatic', 'my-MM', false],
+  ['automatic', 'da-DK', false], ['automatic', 'en-GB', false], ['automatic', 'en', false],
+  ['automatic', undefined, false], ['automatic', 'en-us', false], ['automatic', 'my_Mm', false],
+  ['automatic', 'en-Latn-US', false], ['automatic', 'us', false], [undefined, 'en-US', false]
+]) {
+  test(`weather units ${setting}, locale ${language}`, () => {
+    const runtime = createRuntime({ EnableLocation: '1', ...(setting ? { WeatherUnits: setting } : {}) });
+    runtime.context.navigator.language = language;
+    const params = new URL(weatherRequest(runtime).request.url).searchParams;
+    assert.equal(params.get('temperature_unit'), imperial ? 'fahrenheit' : 'celsius');
+    assert.equal(params.get('wind_speed_unit'), imperial ? 'mph' : 'kmh');
+    assert.equal(params.get('precipitation_unit'), imperial ? 'inch' : 'mm');
+    assert.equal(params.get('timezone'), 'auto');
+    assert.ok(params.get('current').split(',').includes('wind_direction_10m'));
+    for (const field of ['apparent_temperature', 'wind_direction_10m', 'uv_index', 'precipitation_probability']) {
+      assert.ok(params.get('hourly').split(',').includes(field));
+    }
+    for (const field of ['sunrise', 'sunset', 'uv_index_max']) assert.ok(params.get('daily').split(',').includes(field));
+  });
+}
+
+test('weather units persist from Clay raw and converted settings and reopen', () => {
+  const runtime = createRuntime();
+  runtime.context.saveSettings({}, { WeatherUnits: { value: 'imperial' } });
+  assert.equal(runtime.storage.get('WeatherUnits'), 'imperial');
+  let settings;
+  runtime.context.clay.setSettings = value => { settings = value; };
+  runtime.context.openConfiguration('test-model', {}, []);
+  assert.equal(settings.WeatherUnits, 'imperial');
+  runtime.context.saveSettings({ WeatherUnits: 'metric' }, {});
+  assert.equal(runtime.storage.get('WeatherUnits'), 'metric');
+  runtime.context.saveSettings({}, {});
+  assert.equal(runtime.storage.get('WeatherUnits'), 'metric');
+  runtime.context.saveSettings({ WeatherUnits: 'invalid' }, {});
+  assert.equal(runtime.storage.get('WeatherUnits'), 'metric');
+});
+
+for (const timeframe of ['now', 'today']) {
+  test(`weather ${timeframe} includes current conditions and local daily details`, () => {
+    const runtime = createRuntime({ EnableLocation: '1' });
+    const result = weatherRequest(runtime, timeframe).respond(detailedWeather());
+    for (const text of ['Asia/Tokyo', '17°C', 'Partly cloudy', 'feels like 15°C', 'humidity 73%',
+      'wind 12km/h', 'from 315° NW', 'precip 0.5mm', 'high 21°C', 'low 12°C',
+      'precip chance 70%', 'UV max 4.5', 'sunrise 06:12', 'sunset 16:40']) assert.ok(result.includes(text), text);
+    assert.doesNotMatch(result, /NaN|undefined/);
+  });
+}
+
+test('weather uses returned imperial units for all measurements', () => {
+  const runtime = createRuntime({ EnableLocation: '1', WeatherUnits: 'imperial' });
+  const data = detailedWeather();
+  data.current_units = { temperature_2m: '°F', apparent_temperature: '°F', wind_speed_10m: 'mph', precipitation: 'inch' };
+  data.daily_units = { temperature_2m_max: '°F', temperature_2m_min: '°F', precipitation_sum: 'inch' };
+  const result = weatherRequest(runtime).respond(data);
+  assert.match(result, /17°F/);
+  assert.match(result, /wind 12mph/);
+  assert.match(result, /precip 0.5inch/);
+  assert.match(result, /high 21°F, low 12°F/);
+  assert.match(result, /precip 2.5inch/);
+  assert.doesNotMatch(result, /°C|km\/h|mm/);
+});
+
+test('hour offsets use destination local time with surrounding hourly details', () => {
+  const runtime = createRuntime({ EnableLocation: '1' });
+  const result = weatherRequest(runtime, '+2h').respond(detailedWeather());
+  assert.match(result, /2026-11-07 02:00 \(requested\): 15°C, Partly cloudy/);
+  for (const time of ['01:00', '03:00', '04:00']) assert.ok(result.includes(time));
+  assert.match(result, /precip chance 30%/);
+  assert.match(result, /UV 0/);
+  assert.match(result, /from 315° NW/);
+  assert.equal(result.split('\n').length, 5);
+});
+
+test('multi-day forecasts give one line per day and single-day offsets retain their meaning', () => {
+  const runtime = createRuntime({ EnableLocation: '1' });
+  const result = weatherRequest(runtime, 'next 3d').respond(detailedWeather());
+  assert.equal(result.split('\n').length, 4);
+  assert.match(result, /2026-11-08: high 22°C, low 13°C, Overcast, precip chance 40%.*sunrise 06:13, sunset 16:39/);
+  const single = weatherRequest(createRuntime({ EnableLocation: '1' }), '+2d').respond(detailedWeather());
+  assert.equal(single.split('\n').length, 2);
+  assert.match(single, /2026-11-09: high 23°C/);
+});
+
+for (const timeframe of ['now', 'today', 'next 3d', '+2h', '+99h', '+99d']) {
+  test(`weather tolerates missing fields for ${timeframe}`, () => {
+    const runtime = createRuntime({ EnableLocation: '1' });
+    const result = weatherRequest(runtime, timeframe).respond({ current: { temperature_2m: null }, daily: { time: [] }, hourly: { time: [] } });
+    assert.match(result, /unavailable/);
+    assert.doesNotMatch(result, /NaN|undefined|null/);
+  });
+}
+
+test('weather out-of-range offsets never substitute the final available forecast', () => {
+  for (const timeframe of ['+99h', '+99d']) {
+    const runtime = createRuntime({ EnableLocation: '1' });
+    assert.match(weatherRequest(runtime, timeframe).respond(detailedWeather()), /unavailable/);
+  }
+});
+
+
+test('weather settings default to Celsius and reopen legacy automatic as metric', () => {
+  const config = require('../../src/pkjs/config');
+  const section = config.find(item => item.items && item.items.some(child => child.messageKey === 'WeatherUnits'));
+  const setting = section.items.find(item => item.messageKey === 'WeatherUnits');
+  assert.equal(setting.defaultValue, 'metric');
+  assert.deepEqual(setting.options.map(option => option.value), ['metric', 'imperial']);
+  for (const stored of [undefined, 'automatic']) {
+    const runtime = createRuntime(stored ? { WeatherUnits: stored } : {});
+    let reopened;
+    runtime.context.clay.setSettings = settings => { reopened = settings; };
+    runtime.context.openConfiguration('test-model', {}, []);
+    assert.equal(reopened.WeatherUnits, 'metric');
+  }
 });
 
 test('voice results echo recording IDs for transcription, failures, and direct audio', () => {

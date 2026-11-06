@@ -1,5 +1,9 @@
 # Unreleased
 
+- Default weather to Celsius and metric units, with Fahrenheit available in the app settings instead of locale-based automatic selection.
+
+- Add metric and imperial weather units, detailed conditions, local sun times and compact hourly and daily forecasts.
+
 - Fix voice input getting stuck after delivery failures or missing replies, and ignore stale transcription results after cancellation or retry.
 
 - Reduce token usage by preserving each turn's timestamp in the cacheable prompt prefix and removing redundant prompt text.

@@ -179,6 +179,16 @@ module.exports = [
         "defaultValue": true
       },
       {
+        "type": "select",
+        "messageKey": "WeatherUnits",
+        "label": "Weather units",
+        "defaultValue": "metric",
+        "options": [
+          { "label": "Metric (°C, km/h, mm)", "value": "metric" },
+          { "label": "Imperial (°F, mph, inch)", "value": "imperial" }
+        ]
+      },
+      {
         "type": "toggle",
         "messageKey": "EnableChoice",
         "label": "Enable Choice Prompts",
