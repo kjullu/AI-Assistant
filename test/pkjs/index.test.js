@@ -1072,3 +1072,81 @@ test('AppMessage retries stop after three failures and unblock the queue', () =>
   assert.equal(sends.length, 4);
   assert.equal(sends[3].dict.Status, 'Second');
 });
+
+test('changing the current time preserves the complete instruction and history prefix', () => {
+  const runtime = createRuntime({ ExtraSystemPrompt: 'Answer in Danish.' });
+  const history = [
+    { role: 'user', content: 'What is 6 times 7?' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'calc', type: 'function', function: { name: 'calculator', arguments: '{"expression":"6*7"}' } }] },
+    { role: 'tool', tool_call_id: 'calc', content: '42' },
+    { role: 'assistant', content: '42' }
+  ];
+  runtime.context.conversationHistory = history;
+  const NativeDate = Date;
+  runtime.context.Date = class extends NativeDate {
+    constructor() { super('2026-10-17T08:00:00Z'); }
+  };
+  const first = JSON.parse(JSON.stringify(runtime.context.buildMessages()));
+  runtime.context.Date = class extends NativeDate {
+    constructor() { super('2026-10-17T08:01:00Z'); }
+  };
+  const second = JSON.parse(JSON.stringify(runtime.context.buildMessages()));
+  assert.deepEqual(first.slice(0, -1), second.slice(0, -1));
+  assert.notEqual(first.at(-1).content, second.at(-1).content);
+  assert.match(second.at(-1).content, /^Current local time is /);
+  assert.deepEqual(second.slice(-5, -1), history);
+  assert.ok(second.some(message => message.content === 'Answer in Danish.'));
+});
+
+test('outgoing requests keep time directly before the new question and omit availability chatter', () => {
+  const runtime = createRuntime({ EnableSearch: '1', BraveSearchApiKey: 'test-key', EnableScrape: '1', FirecrawlApiKey: 'test-key' });
+  prompt(runtime, 'What is the latest news?');
+  const payload = JSON.parse(modelRequests(runtime)[0].body);
+  assert.match(payload.messages.at(-2).content, /^Current local time is /);
+  assert.deepEqual(payload.messages.at(-1), { role: 'user', content: 'What is the latest news?' });
+  assert.equal(payload.messages.filter(message => message.role === 'user').length, 1);
+  assert.doesNotMatch(JSON.stringify(payload.messages), /Search available:|Scrape available:|Weather available:|Choice available:|Use Brave Search|Use Firecrawl scrape|through Frankfurter/);
+  assert.ok(payload.tools.some(tool => tool.function.name === 'search'));
+  assert.ok(payload.tools.some(tool => tool.function.name === 'scrape'));
+  assert.match(payload.tools.find(tool => tool.function.name === 'calculator').function.description, /exact arithmetic.*current currency/);
+  assert.match(payload.messages[0].content, /do not call the Location tool first/);
+  assert.match(payload.messages[0].content, /untrusted data/);
+});
+
+test('consecutive turns reuse older history ahead of the current timestamp', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'First question', 1);
+  const first = JSON.parse(modelRequests(runtime)[0].body).messages;
+  streamResponse(modelRequests(runtime)[0], { reply: 'First answer' });
+  prompt(runtime, 'Second question', 2);
+  const second = JSON.parse(modelRequests(runtime)[1].body).messages;
+  streamResponse(modelRequests(runtime)[1], { reply: 'Second answer' });
+  prompt(runtime, 'Third question', 3);
+  const third = JSON.parse(modelRequests(runtime)[2].body).messages;
+
+  const stableLength = first.length - 2;
+  assert.deepEqual(second.slice(0, stableLength), first.slice(0, stableLength));
+  assert.deepEqual(second.slice(stableLength, -2), [
+    { role: 'user', content: 'First question' },
+    { role: 'assistant', content: 'First answer' }
+  ]);
+  assert.deepEqual(third.slice(0, second.length - 2), second.slice(0, -2));
+  assert.deepEqual(third.slice(-4, -2), [
+    { role: 'user', content: 'Second question' },
+    { role: 'assistant', content: 'Second answer' }
+  ]);
+  assert.match(third.at(-2).content, /^Current local time is /);
+  assert.equal(third.filter(message => /^Current local time is /.test(message.content || '')).length, 1);
+});
+
+test('tool rounds preserve the full request prefix and its timestamp', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Calculate 6 times 7');
+  const first = JSON.parse(modelRequests(runtime)[0].body).messages;
+  streamResponse(modelRequests(runtime)[0], { toolCalls: [{ name: 'calculator', arguments: { expression: '6*7' } }] });
+  const second = JSON.parse(modelRequests(runtime)[1].body).messages;
+  assert.deepEqual(second.slice(0, first.length), first);
+  assert.equal(second.filter(message => /^Current local time is /.test(message.content || '')).length, 1);
+  assert.equal(second.at(-1).role, 'tool');
+  assert.match(second.at(-1).content, /42/);
+});
