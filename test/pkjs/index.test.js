@@ -74,6 +74,7 @@ function createRuntime(settings = {}) {
         sendHandler(dict, success, failure);
       },
       getTimelineToken(success) { success('timeline-token'); },
+      getActiveWatchInfo() { return { firmware: { major: 4, minor: 41, patch: 1 } }; },
       openURL() {}
     }
   };
@@ -974,27 +975,87 @@ test('watch text replaces common missing font glyphs without stripping supported
   const runtime = createRuntime();
 
   assert.equal(
-    runtime.context.watchSafeText('Danish: æøå • 2× H100 “fast” €10–20 ≤ 5…\ufe0f'),
+    runtime.context.watchSafeText('Danish: æøå • 2× H100 “fast” €10–20 ≤ 5…'),
     'Danish: æøå • 2x H100 "fast" €10-20 <= 5...'
   );
 });
 
-test('watch text gives unsupported emoji and status symbols readable fallbacks', () => {
+test('watch text preserves emoji status symbols and newly supported emoji', () => {
   const runtime = createRuntime();
 
   assert.equal(
     runtime.context.watchSafeText('✅ Ready ⚠\ufe0f Careful ❌ Failed 🚀🔥'),
-    '[ok] Ready [!] Careful [x] Failed [emoji]'
+    '✅ Ready ⚠\ufe0f Careful ❌ Failed 🚀🔥'
   );
 });
 
-test('watch text preserves emoji included in Pebble Gothic fonts', () => {
+test('watch text preserves old and new emoji without a fixed whitelist', () => {
   const runtime = createRuntime();
 
   assert.equal(
     runtime.context.watchSafeText('😃 👍 🎉 💩 👋'),
-    '😃 👍 🎉 💩 [emoji]'
+    '😃 👍 🎉 💩 👋'
   );
+});
+
+test('watch text preserves emoji selectors, joiners, modifiers, flags and keycaps', () => {
+  const runtime = createRuntime();
+  const text = '❤️ 👩🏽‍💻 🏳️‍🌈 🇩🇰 1️⃣ 🫠 ☑️ ✔️ ❎';
+
+  assert.equal(runtime.context.watchSafeText(text), text);
+});
+
+test('complete replies keep emoji pairs intact at AppMessage chunk boundaries', () => {
+  const runtime = createRuntime();
+  runtime.context.RESPONSE_CHUNK_CHARS = 8;
+  const reply = '1234567🚀🔥 next 🫠';
+
+  runtime.context.sendAssistantReply(reply, 7);
+
+  const chunks = runtime.sentMessages.map(message => message.AssistantResponse);
+  assert.equal(chunks.join(''), reply);
+  assert.ok(chunks.every(chunk => chunk.length <= 8));
+  for (const chunk of chunks) {
+    assert.equal(Buffer.from(chunk, 'utf8').toString('utf8'), chunk);
+  }
+});
+
+test('older and unknown firmware keep readable emoji fallbacks', () => {
+  const runtime = createRuntime();
+  for (const firmware of [undefined, { major: 3, minor: 99 },
+    { major: 4, minor: 9, patch: 184 }, { major: 4, minor: 29 }]) {
+    runtime.context.Pebble.getActiveWatchInfo = () => ({ firmware });
+    assert.equal(runtime.context.watchSafeText('✅ Pass ❌ Fail ⚠️ Careful 🚀🔥 😃'),
+      '[ok] Pass [x] Fail [!] Careful [emoji] 😃');
+  }
+  delete runtime.context.Pebble.getActiveWatchInfo;
+  assert.equal(runtime.context.watchSafeText('🚀'), '[emoji]');
+  runtime.context.Pebble.getActiveWatchInfo = () => { throw new Error('No watch'); };
+  assert.equal(runtime.context.watchSafeText('🚀'), '[emoji]');
+});
+
+test('expanded emoji start at firmware 4.30 and remain enabled in future versions', () => {
+  const runtime = createRuntime();
+  for (const firmware of [{ major: 4, minor: 30 }, { major: 4, minor: 41 },
+    { major: 5, minor: 0 }]) {
+    runtime.context.Pebble.getActiveWatchInfo = () => ({ firmware });
+    assert.equal(runtime.context.watchSafeText('✅❌🚀🔥🫠'), '✅❌🚀🔥🫠');
+  }
+});
+
+test('clip never leaves half an emoji in a summary, option or tool label', () => {
+  const runtime = createRuntime();
+  assert.equal(runtime.context.clip('abc🚀def', 4), 'abc');
+  assert.equal(runtime.context.clip('abc🚀def', 5), 'abc🚀');
+  assert.equal(runtime.context.clip('🚀', 0), '');
+  assert.equal(runtime.context.clip('🚀', 1), '');
+});
+
+test('a one-unit chunk setting still makes progress without splitting emoji', () => {
+  const runtime = createRuntime();
+  runtime.context.RESPONSE_CHUNK_CHARS = 1;
+  runtime.context.sendAssistantReply('🚀🔥', 7);
+  assert.deepEqual(runtime.sentMessages.map(message => message.AssistantResponse), ['🚀', '🔥']);
 });
 
 test('complete replies are normalized before response chunking', () => {
@@ -1020,7 +1081,7 @@ test('streamed reply chunks are normalized at the watch boundary', () => {
   assert.equal(runtime.sentMessages[0].AssistantResponse, '1x B200 +/- !=');
 });
 
-test('streaming waits for a low surrogate before sending an emoji fallback', () => {
+test('streaming waits for a low surrogate before sending a new emoji', () => {
   const runtime = createRuntime();
   prompt(runtime, 'Use an emoji');
   const request = modelRequests(runtime)[0];
@@ -1039,7 +1100,7 @@ test('streaming waits for a low surrogate before sending an emoji fallback', () 
 
   assert.equal(
     runtime.sentMessages.filter(message => message.AssistantResponse).map(message => message.AssistantResponse).join(''),
-    'Ready [emoji] now'
+    'Ready 🚀 now'
   );
 });
 

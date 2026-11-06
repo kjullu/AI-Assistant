@@ -1,3 +1,11 @@
+# Unreleased
+
+- Keep readable emoji fallbacks on firmware below PebbleOS 4.30 or when the firmware version is unavailable.
+- Truncate watch text at UTF-8 boundaries and phone-side summaries and options at complete emoji pairs, preventing blank choice questions and broken text.
+
+- Let PebbleOS render its full emoji set, including the new color emoji, instead of replacing emoji with text placeholders.
+- Preserve emoji sequences and keep emoji pairs intact when splitting complete replies into watch messages.
+
 # 0.4.1
 
 - Update the app name to AI Assistant.
