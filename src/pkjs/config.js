@@ -182,9 +182,8 @@ module.exports = [
         "type": "select",
         "messageKey": "WeatherUnits",
         "label": "Weather units",
-        "defaultValue": "automatic",
+        "defaultValue": "metric",
         "options": [
-          { "label": "Automatic", "value": "automatic" },
           { "label": "Metric (°C, km/h, mm)", "value": "metric" },
           { "label": "Imperial (°F, mph, inch)", "value": "imperial" }
         ]

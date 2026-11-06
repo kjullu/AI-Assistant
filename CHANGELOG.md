@@ -1,6 +1,8 @@
 # Unreleased
 
-- Add automatic, metric and imperial weather units, detailed conditions, local sun times and compact hourly and daily forecasts.
+- Default weather to Celsius and metric units, with Fahrenheit available in the app settings instead of locale-based automatic selection.
+
+- Add metric and imperial weather units, detailed conditions, local sun times and compact hourly and daily forecasts.
 
 - Reduce token usage by preserving each turn's timestamp in the cacheable prompt prefix and removing redundant prompt text.
 - Keep readable emoji fallbacks on firmware below PebbleOS 4.30 or when the firmware version is unavailable.

@@ -2046,10 +2046,10 @@ function detailedWeather() {
 
 for (const [setting, language, imperial] of [
   ['metric', 'en-US', false], ['imperial', 'da-DK', true],
-  ['automatic', 'en-US', true], ['automatic', 'en-LR', true], ['automatic', 'my-MM', true],
+  ['automatic', 'en-US', false], ['automatic', 'en-LR', false], ['automatic', 'my-MM', false],
   ['automatic', 'da-DK', false], ['automatic', 'en-GB', false], ['automatic', 'en', false],
-  ['automatic', undefined, false], ['automatic', 'en-us', true], ['automatic', 'my_Mm', true],
-  ['automatic', 'en-Latn-US', true], ['automatic', 'us', false], [undefined, 'en-US', true]
+  ['automatic', undefined, false], ['automatic', 'en-us', false], ['automatic', 'my_Mm', false],
+  ['automatic', 'en-Latn-US', false], ['automatic', 'us', false], [undefined, 'en-US', false]
 ]) {
   test(`weather units ${setting}, locale ${language}`, () => {
     const runtime = createRuntime({ EnableLocation: '1', ...(setting ? { WeatherUnits: setting } : {}) });
@@ -2080,7 +2080,7 @@ test('weather units persist from Clay raw and converted settings and reopen', ()
   runtime.context.saveSettings({}, {});
   assert.equal(runtime.storage.get('WeatherUnits'), 'metric');
   runtime.context.saveSettings({ WeatherUnits: 'invalid' }, {});
-  assert.equal(runtime.storage.get('WeatherUnits'), 'automatic');
+  assert.equal(runtime.storage.get('WeatherUnits'), 'metric');
 });
 
 for (const timeframe of ['now', 'today']) {
@@ -2142,5 +2142,21 @@ test('weather out-of-range offsets never substitute the final available forecast
   for (const timeframe of ['+99h', '+99d']) {
     const runtime = createRuntime({ EnableLocation: '1' });
     assert.match(weatherRequest(runtime, timeframe).respond(detailedWeather()), /unavailable/);
+  }
+});
+
+
+test('weather settings default to Celsius and reopen legacy automatic as metric', () => {
+  const config = require('../../src/pkjs/config');
+  const section = config.find(item => item.items && item.items.some(child => child.messageKey === 'WeatherUnits'));
+  const setting = section.items.find(item => item.messageKey === 'WeatherUnits');
+  assert.equal(setting.defaultValue, 'metric');
+  assert.deepEqual(setting.options.map(option => option.value), ['metric', 'imperial']);
+  for (const stored of [undefined, 'automatic']) {
+    const runtime = createRuntime(stored ? { WeatherUnits: stored } : {});
+    let reopened;
+    runtime.context.clay.setSettings = settings => { reopened = settings; };
+    runtime.context.openConfiguration('test-model', {}, []);
+    assert.equal(reopened.WeatherUnits, 'metric');
   }
 });
