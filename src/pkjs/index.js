@@ -12,6 +12,13 @@ var FIRECRAWL_SCRAPE_URL = 'https://api.firecrawl.dev/v1/scrape';
 var OPENMETEO_GEO_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 var OPENMETEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 var NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
+var NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
+var OSRM_ROUTE_BASE_URL = 'https://routing.openstreetmap.de/';
+var DIRECTION_MODES = {
+  walking: { profile: 'routed-foot', label: 'Walking', noun: 'walking', way: 'a walkable path or road' },
+  cycling: { profile: 'routed-bike', label: 'Cycling', noun: 'cycling', way: 'a bikeable path or road' },
+  driving: { profile: 'routed-car', label: 'Driving', noun: 'driving', way: 'a drivable road' }
+};
 var TIMELINE_URL = 'https://timeline-api.getpebble.com/v1/user/pins/';
 var FRANKFURTER_RATE_URL = 'https://api.frankfurter.dev/v2/rate/';
 
@@ -52,6 +59,8 @@ var STREAM_WATCHDOG_MS = 30000; // Wait longer before falling back from streamin
 var MAX_TOOL_CALLS = 8;
 var MAX_TOOL_ROUNDS = 5;
 var MAX_PARALLEL_TOOLS = 3;
+var MAX_NEARBY_RESULTS = 5;
+var MAX_ROUTE_STEPS = 20;
 var MAX_SEND_ATTEMPTS = 3;
 var WATCH_RENDER_GAP_MS = 150;
 var MAX_HISTORY_MESSAGES = 24;
@@ -108,6 +117,52 @@ function untrackRequest(request) {
 
 function requestIsCurrent(request) {
   return !request._cancelled && request._generation === requestGeneration;
+}
+
+// Nominatim and FOSSGIS OSRM allow at most one request per second, so each
+// service has a queue that sends at least SERVICE_REQUEST_GAP_MS apart, measured
+// from the last request actually sent. Cancelled or stale requests are dropped
+// without using a slot, and the setting is rechecked right before sending.
+var SERVICE_REQUEST_GAP_MS = 1000;
+var serviceQueues = {};
+
+function sendRateLimited(request, service, settingKey, callback) {
+  var queue = serviceQueues[service];
+  if (!queue) {
+    queue = serviceQueues[service] = { items: [], lastSent: 0, timer: null };
+  }
+  queue.items.push({ request: request, settingKey: settingKey, callback: callback });
+  pumpServiceQueue(service);
+}
+
+function pumpServiceQueue(service) {
+  var queue = serviceQueues[service];
+  if (queue.timer) return;
+  while (queue.items.length) {
+    var item = queue.items[0];
+    if (!requestIsCurrent(item.request)) {
+      queue.items.shift();
+      untrackRequest(item.request);
+      continue;
+    }
+    if (item.settingKey && !getBoolSetting(item.settingKey, false)) {
+      queue.items.shift();
+      untrackRequest(item.request);
+      item.callback(null, 'OpenStreetMap access was disabled before the request was sent.');
+      continue;
+    }
+    var wait = queue.lastSent + SERVICE_REQUEST_GAP_MS - Date.now();
+    if (wait > 0) {
+      queue.timer = setTimeout(function() {
+        queue.timer = null;
+        pumpServiceQueue(service);
+      }, wait);
+      return;
+    }
+    queue.items.shift();
+    queue.lastSent = Date.now();
+    item.request.send();
+  }
 }
 
 function clearPendingChoice() {
@@ -788,6 +843,7 @@ function sendStatsToWatch() {
 function sendToolStatesToWatch() {
   sendToWatch({
     ToolStates: 'location=' + (getBoolSetting('EnableLocation', false) ? '1' : '0') +
+      ';openstreetmap=' + (getBoolSetting('EnableOpenStreetMap', false) ? '1' : '0') +
       ';memory=' + (getBoolSetting('EnableMemory', true) ? '1' : '0') +
       ';calculator=' + (getBoolSetting('EnableCalculator', true) ? '1' : '0') +
       ';search=' + (getBoolSetting('EnableSearch', false) ? '1' : '0') +
@@ -1111,6 +1167,7 @@ function saveSettings(convertedSettings, rawSettings) {
   var apiKey = settingValue(convertedSettings, rawSettings, 'OpenRouterApiKey', messageKeys.OpenRouterApiKey);
   var model = settingValue(convertedSettings, rawSettings, 'OpenRouterModel', messageKeys.OpenRouterModel);
   var enableLocation = settingValue(convertedSettings, rawSettings, 'EnableLocation', messageKeys.EnableLocation);
+  var enableOpenStreetMap = settingValue(convertedSettings, rawSettings, 'EnableOpenStreetMap', messageKeys.EnableOpenStreetMap);
   var enableMemory = settingValue(convertedSettings, rawSettings, 'EnableMemory', messageKeys.EnableMemory);
   var enableCalculator = settingValue(convertedSettings, rawSettings, 'EnableCalculator', messageKeys.EnableCalculator);
   var enableSearch = settingValue(convertedSettings, rawSettings, 'EnableSearch', messageKeys.EnableSearch);
@@ -1142,6 +1199,9 @@ function saveSettings(convertedSettings, rawSettings) {
   }
   if (enableLocation !== undefined) {
     localStorage.setItem('EnableLocation', String(enableLocation ? 1 : 0));
+  }
+  if (enableOpenStreetMap !== undefined) {
+    localStorage.setItem('EnableOpenStreetMap', String(enableOpenStreetMap ? 1 : 0));
   }
   if (enableMemory !== undefined) {
     localStorage.setItem('EnableMemory', String(enableMemory ? 1 : 0));
@@ -1210,6 +1270,7 @@ function buildSystemPrompt() {
   var memoryAvailable = getBoolSetting('EnableMemory', true);
   var calculatorAvailable = getBoolSetting('EnableCalculator', true);
   var locationAvailable = getBoolSetting('EnableLocation', false);
+  var openStreetMapAvailable = getBoolSetting('EnableOpenStreetMap', false);
   var choiceAvailable = getBoolSetting('EnableChoice', true);
   var timelineAvailable = getBoolSetting('EnableTimeline', true);
   var healthAvailable = getBoolSetting('EnableHealth', false);
@@ -1230,7 +1291,10 @@ function buildSystemPrompt() {
     lines.push('For weather where the user is now, set place to exactly "current location". The weather tool reads the phone coordinates when Location is enabled, so do not call the Location tool first. Accept named regions like states, countries, or broad areas such as "central Europe".');
   }
   if (locationAvailable) {
-    lines.push('Use Location for the user location, nearby places, or "where am I" requests.');
+    lines.push('Use Location for "where am I" requests.');
+  }
+  if (openStreetMapAvailable) {
+    lines.push('Use the OpenStreetMap tool to find stores, services, restaurants, or other places near the user, and to get walking, cycling, or driving directions. Directions default to walking; set mode to cycling or driving only when the user asks to bike or drive. Opening hours may be missing or stale, so describe them as listed hours rather than guaranteed hours. For directions to a nearby result, pass its latitude and longitude back to the OpenStreetMap tool with action "directions". Only set an origin when the user explicitly names or supplies one. For the current location, current position, where the user is, or here, omit all origin fields so the tool uses phone GPS. Never invent an origin.');
   }
 
   if (choiceAvailable) {
@@ -1291,6 +1355,20 @@ function buildToolDefinitions() {
   }
   if (getBoolSetting('EnableLocation', false)) {
     tools.push(functionTool('location', 'Get the user location from the phone GPS.', {}, []));
+  }
+  if (getBoolSetting('EnableOpenStreetMap', false)) {
+    tools.push(functionTool('openstreetmap', 'Find nearby places or get walking, cycling, or driving directions using phone GPS and OpenStreetMap data.', {
+      action: { type: 'string', enum: ['nearby_places', 'directions'], description: 'Use nearby_places to search, or directions to route.' },
+      query: { type: 'string', description: 'For nearby_places: a place name or type, such as supermarket, pharmacy, coffee, or Netto.' },
+      radiusMeters: { type: 'number', description: 'For nearby_places: search radius from 100 to 10000 meters. Defaults to 3000.' },
+      mode: { type: 'string', enum: ['walking', 'cycling', 'driving'], description: 'For directions: travel mode. Defaults to walking; use cycling or driving only when the user asks for it.' },
+      destination: { type: 'string', description: 'For directions: destination name, address, or result label.' },
+      destinationLatitude: { type: 'number', description: 'For directions: latitude from a nearby_places result.' },
+      destinationLongitude: { type: 'number', description: 'For directions: longitude from a nearby_places result.' },
+      origin: { type: 'string', description: 'For directions only: an explicit starting place or address named by the user. Omit when the user means their current position so phone GPS is used.' },
+      originLatitude: { type: 'number', description: 'For directions only: explicit starting latitude supplied by the user.' },
+      originLongitude: { type: 'number', description: 'For directions only: explicit starting longitude supplied by the user.' }
+    }, ['action']));
   }
   if (getBoolSetting('EnableChoice', true)) {
     tools.push(functionTool('choice', 'Ask the user to choose on the watch.', {
@@ -1871,7 +1949,7 @@ function reverseGeocode(lat, lon, generation, callback) {
     callback(null);
   };
 
-  request.send();
+  sendRateLimited(request, 'nominatim', null, callback);
 }
 
 function runLocationTool(generation, callback) {
@@ -1912,6 +1990,416 @@ function runLocationTool(generation, callback) {
     maximumAge: 60 * 1000,
     timeout: 15000
   });
+}
+
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  var radians = Math.PI / 180;
+  var dLat = (lat2 - lat1) * radians;
+  var dLon = (lon2 - lon1) * radians;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * radians) * Math.cos(lat2 * radians) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function nearbyAddress(place) {
+  var address = place.address || {};
+  var road = address.road || address.pedestrian || address.residential || '';
+  var street = road && address.house_number ? road + ' ' + address.house_number : road;
+  var locality = address.city || address.town || address.village || address.municipality || address.suburb || '';
+  var parts = [];
+  if (street) parts.push(street);
+  if (address.postcode || locality) parts.push((address.postcode ? address.postcode + ' ' : '') + locality);
+  return parts.join(', ') || place.display_name || 'Address not listed';
+}
+
+function formatNearbyPlaces(query, originLat, originLon, places, radiusMeters) {
+  var matches = places.map(function(place) {
+    place._distance = distanceMeters(originLat, originLon, Number(place.lat), Number(place.lon));
+    return place;
+  }).filter(function(place) {
+    return isFinite(place._distance) && place._distance <= radiusMeters;
+  }).sort(function(a, b) {
+    return a._distance - b._distance;
+  }).slice(0, MAX_NEARBY_RESULTS);
+
+  if (!matches.length) return 'No OpenStreetMap matches found for "' + query + '" within ' + radiusMeters + ' meters.';
+  var lines = ['Nearby OpenStreetMap results for "' + query + '":'];
+  matches.forEach(function(place, index) {
+    var tags = place.extratags || {};
+    var name = place.name || (place.namedetails && place.namedetails.name) || String(place.display_name || '').split(',')[0] || query;
+    var details = (index + 1) + '. ' + name + ' - ' + Math.round(place._distance) + ' m - ' + nearbyAddress(place) +
+      ' - latitude ' + place.lat + ', longitude ' + place.lon;
+    details += tags.opening_hours ? ' - listed hours: ' + tags.opening_hours : ' - opening hours not listed';
+    if (tags.phone || tags['contact:phone']) details += ' - phone: ' + (tags.phone || tags['contact:phone']);
+    if (tags.website || tags['contact:website']) details += ' - website: ' + (tags.website || tags['contact:website']);
+    lines.push(details);
+  });
+  return lines.join('\n');
+}
+
+function runNearbyPlacesTool(args, generation, callback) {
+  if (!getBoolSetting('EnableOpenStreetMap', false)) {
+    callback(null, 'OpenStreetMap access disabled. Enable OpenStreetMap to search nearby places.');
+    return;
+  }
+  var query = String(args && args.query || '').replace(/^\s+|\s+$/g, '');
+  if (!query) {
+    callback(null, 'No place name or type provided.');
+    return;
+  }
+  if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
+    callback(null, 'Location unavailable on this phone.');
+    return;
+  }
+  var radius = Number(args.radiusMeters || 3000);
+  if (!isFinite(radius)) radius = 3000;
+  radius = Math.max(100, Math.min(10000, Math.round(radius)));
+
+  navigator.geolocation.getCurrentPosition(function(pos) {
+    if (generation !== requestGeneration) return;
+    var lat = Number(pos.coords.latitude);
+    var lon = Number(pos.coords.longitude);
+    var latDelta = radius / 111320;
+    var lonScale = Math.max(0.2, Math.cos(lat * Math.PI / 180));
+    var lonDelta = radius / (111320 * lonScale);
+    var viewbox = [lon - lonDelta, lat + latDelta, lon + lonDelta, lat - latDelta].join(',');
+    var request = new XMLHttpRequest();
+    trackRequest(request, generation);
+    var url = NOMINATIM_SEARCH_URL + '?format=jsonv2&addressdetails=1&extratags=1&namedetails=1&limit=20&bounded=1' +
+      '&q=' + encodeURIComponent(query) + '&viewbox=' + encodeURIComponent(viewbox);
+    request.open('GET', url, true);
+    request.setRequestHeader('Accept', 'application/json');
+    request.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+    request.timeout = 15000;
+    request.onload = function() {
+      untrackRequest(request);
+      if (!requestIsCurrent(request)) return;
+      if (request.status < 200 || request.status >= 300) {
+        callback(null, 'OpenStreetMap nearby search failed (' + request.status + ').');
+        return;
+      }
+      try {
+        callback(formatNearbyPlaces(query, lat, lon, JSON.parse(request.responseText), radius), null);
+      } catch (err) {
+        callback(null, 'OpenStreetMap returned an unreadable nearby search response.');
+      }
+    };
+    request.onerror = function() {
+      untrackRequest(request);
+      if (requestIsCurrent(request)) callback(null, 'Unable to reach OpenStreetMap for nearby search.');
+    };
+    request.ontimeout = function() {
+      untrackRequest(request);
+      if (requestIsCurrent(request)) callback(null, 'OpenStreetMap nearby search timed out.');
+    };
+    sendRateLimited(request, 'nominatim', 'EnableOpenStreetMap', callback);
+  }, function(err) {
+    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
+  }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
+}
+
+function routeDistanceText(meters) {
+  return meters < 1000 ? Math.round(meters) + ' m' : (meters / 1000).toFixed(1) + ' km';
+}
+
+function routeStepText(step) {
+  var maneuver = step.maneuver || {};
+  var type = String(maneuver.type || 'continue').replace(/_/g, ' ');
+  var modifier = maneuver.modifier ? ' ' + maneuver.modifier : '';
+  var road = step.name ? ' onto ' + step.name : '';
+  var instruction;
+  if (type === 'depart') instruction = 'Head' + modifier + (step.name ? ' on ' + step.name : '');
+  else if (type === 'arrive') instruction = 'Arrive at the destination';
+  else if (type === 'turn') instruction = 'Turn' + modifier + road;
+  else if (type === 'new name' || type === 'continue') instruction = 'Continue' + modifier + road;
+  else if (type === 'roundabout' || type === 'rotary') {
+    instruction = 'Enter the roundabout';
+    if (maneuver.exit) instruction += ' and take exit ' + maneuver.exit;
+    instruction += road;
+  } else instruction = type.charAt(0).toUpperCase() + type.slice(1) + modifier + road;
+  if (step.distance >= 10 && type !== 'arrive') instruction += ' for ' + routeDistanceText(step.distance);
+  return instruction;
+}
+
+function formatDirections(mode, destination, destinationLabel, originLabel, json) {
+  if (!json || json.code !== 'Ok' || !json.routes || !json.routes.length) {
+    return null;
+  }
+  var route = json.routes[0];
+  if (typeof route.distance !== 'number' || typeof route.duration !== 'number' ||
+      !isFinite(route.distance) || !isFinite(route.duration)) return null;
+  var steps = route.legs && route.legs[0] && route.legs[0].steps || [];
+  var lines = [mode.label + ' directions to ' + destination + ': ' + routeDistanceText(route.distance) +
+    ', about ' + Math.max(1, Math.round(route.duration / 60)) + ' min.'];
+  lines.push('Starting point: ' + originLabel + '.');
+  if (destinationLabel && destinationLabel !== destination) lines.push('Destination: ' + destinationLabel + '.');
+  steps.slice(0, MAX_ROUTE_STEPS).forEach(function(step, index) {
+    lines.push((index + 1) + '. ' + routeStepText(step));
+  });
+  if (steps.length > MAX_ROUTE_STEPS) lines.push('The route has ' + (steps.length - MAX_ROUTE_STEPS) + ' more steps.');
+  lines.push('Route source: OSRM using © OpenStreetMap contributors data. Follow road signs and local rules.');
+  return lines.join('\n');
+}
+
+function requestRoute(mode, startLat, startLon, originLabel, destination, destinationLabel, endLat, endLon, generation, callback) {
+  var request = new XMLHttpRequest();
+  trackRequest(request, generation);
+  var coordinates = startLon + ',' + startLat + ';' + endLon + ',' + endLat;
+  request.open('GET', OSRM_ROUTE_BASE_URL + mode.profile + '/route/v1/driving/' + coordinates + '?steps=true&overview=false', true);
+  request.setRequestHeader('Accept', 'application/json');
+  request.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+  request.timeout = 20000;
+  request.onload = function() {
+    untrackRequest(request);
+    if (!requestIsCurrent(request)) return;
+    var response;
+    try {
+      response = JSON.parse(request.responseText);
+    } catch (err) {
+      callback(null, request.status >= 200 && request.status < 300 ?
+        'The directions service returned an unreadable response.' :
+        'Directions lookup failed (' + request.status + ').');
+      return;
+    }
+    if (response && response.code === 'NoRoute') {
+      callback(null, 'No ' + mode.noun + ' route found to ' + destination + '.');
+      return;
+    }
+    if (response && response.code === 'NoSegment') {
+      callback(null, 'The starting point or destination is not near ' + mode.way + '.');
+      return;
+    }
+    if (request.status < 200 || request.status >= 300) {
+      callback(null, 'Directions lookup failed (' + request.status + ').');
+      return;
+    }
+    var result = formatDirections(mode, destination, destinationLabel, originLabel, response);
+    callback(result, result ? null : (response && response.code === 'Ok' ?
+      'The directions service returned an incomplete response.' :
+      'No ' + mode.noun + ' route found to ' + destination + '.'));
+  };
+  request.onerror = function() {
+    untrackRequest(request);
+    if (requestIsCurrent(request)) callback(null, 'Unable to reach the directions service.');
+  };
+  request.ontimeout = function() {
+    untrackRequest(request);
+    if (requestIsCurrent(request)) callback(null, 'Directions lookup timed out.');
+  };
+  sendRateLimited(request, 'osrm', 'EnableOpenStreetMap', callback);
+}
+
+function coordinateProvided(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function parseCoordinate(value, maximum) {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string') {
+    value = value.replace(/^\s+|\s+$/g, '');
+    if (!value) return null;
+  }
+  var parsed = Number(value);
+  return isFinite(parsed) && Math.abs(parsed) <= maximum ? parsed : null;
+}
+
+function originMeansCurrentLocation(origin) {
+  var normalized = String(origin || '').toLowerCase().replace(/[.!?]+$/g, '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+  return ['current location', 'my location', 'my current location', 'here', 'current position', 'where i am', 'her'].indexOf(normalized) !== -1;
+}
+
+function runDirectionsTool(args, generation, callback) {
+  if (!getBoolSetting('EnableOpenStreetMap', false)) {
+    callback(null, 'OpenStreetMap access disabled. Enable OpenStreetMap to request directions.');
+    return;
+  }
+  args = args || {};
+  var destination = String(args && args.destination || '').replace(/^\s+|\s+$/g, '');
+  var modeName = String(args.mode || 'walking').replace(/^\s+|\s+$/g, '').toLowerCase() || 'walking';
+  var mode = Object.prototype.hasOwnProperty.call(DIRECTION_MODES, modeName) ? DIRECTION_MODES[modeName] : null;
+  if (!mode) {
+    callback(null, 'Directions mode must be walking, cycling, or driving.');
+    return;
+  }
+  var origin = String(args.origin || '').replace(/^\s+|\s+$/g, '');
+  if (originMeansCurrentLocation(origin)) origin = '';
+  var hasOriginLat = coordinateProvided(args.originLatitude);
+  var hasOriginLon = coordinateProvided(args.originLongitude);
+  if (hasOriginLat !== hasOriginLon) {
+    callback(null, 'Directions origin coordinates require both latitude and longitude.');
+    return;
+  }
+  var hasDestinationLat = coordinateProvided(args.destinationLatitude);
+  var hasDestinationLon = coordinateProvided(args.destinationLongitude);
+  if (hasDestinationLat !== hasDestinationLon) {
+    callback(null, 'Directions destination coordinates require both latitude and longitude.');
+    return;
+  }
+  var explicitLat = null;
+  var explicitLon = null;
+  if (hasOriginLat && hasOriginLon) {
+    explicitLat = parseCoordinate(args.originLatitude, 90);
+    explicitLon = parseCoordinate(args.originLongitude, 180);
+    if (explicitLat === null || explicitLon === null) {
+      callback(null, 'Directions origin coordinates are invalid.');
+      return;
+    }
+  }
+  var endLat = null;
+  var endLon = null;
+  if (hasDestinationLat && hasDestinationLon) {
+    endLat = parseCoordinate(args.destinationLatitude, 90);
+    endLon = parseCoordinate(args.destinationLongitude, 180);
+    if (endLat === null || endLon === null) {
+      callback(null, 'Directions destination coordinates are invalid.');
+      return;
+    }
+    if (!destination) destination = 'coordinates (' + endLat + ', ' + endLon + ')';
+  }
+  if (!destination) {
+    callback(null, 'No directions destination provided.');
+    return;
+  }
+
+  function continueFromOrigin(startLat, startLon, originLabel) {
+    if (generation !== requestGeneration) return;
+    if (hasDestinationLat && hasDestinationLon) {
+      requestRoute(mode, startLat, startLon, originLabel, destination, destination, endLat, endLon, generation, callback);
+      return;
+    }
+
+    var latDelta = 10000 / 111320;
+    var lonDelta = 10000 / (111320 * Math.max(0.2, Math.cos(startLat * Math.PI / 180)));
+    var viewbox = [startLon - lonDelta, startLat + latDelta, startLon + lonDelta, startLat - latDelta].join(',');
+    var search = new XMLHttpRequest();
+    trackRequest(search, generation);
+    var url = NOMINATIM_SEARCH_URL + '?format=jsonv2&limit=10&q=' + encodeURIComponent(destination) +
+      '&viewbox=' + encodeURIComponent(viewbox);
+    search.open('GET', url, true);
+    search.setRequestHeader('Accept', 'application/json');
+    search.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+    search.timeout = 15000;
+    search.onload = function() {
+      untrackRequest(search);
+      if (!requestIsCurrent(search)) return;
+      if (search.status < 200 || search.status >= 300) {
+        callback(null, 'Could not locate the directions destination (' + search.status + ').');
+        return;
+      }
+      var matches;
+      try {
+        matches = JSON.parse(search.responseText);
+      } catch (err) {
+        callback(null, 'OpenStreetMap returned an unreadable destination response.');
+        return;
+      }
+      if (!Array.isArray(matches)) {
+        callback(null, 'OpenStreetMap returned an unreadable destination response.');
+        return;
+      }
+      if (!matches.length) {
+        callback(null, 'Could not find the directions destination ' + destination + '.');
+        return;
+      }
+      var selected = null;
+      for (var i = 0; i < matches.length; i++) {
+        var selectedLat = parseCoordinate(matches[i].lat, 90);
+        var selectedLon = parseCoordinate(matches[i].lon, 180);
+        if (selectedLat !== null && selectedLon !== null) {
+          selected = { place: matches[i], lat: selectedLat, lon: selectedLon };
+          break;
+        }
+      }
+      if (!selected) {
+        callback(null, 'OpenStreetMap returned invalid coordinates for the destination.');
+        return;
+      }
+      var destinationLabel = String(selected.place.display_name || destination).replace(/^\s+|\s+$/g, '') || destination;
+      requestRoute(mode, startLat, startLon, originLabel, destination, destinationLabel,
+        selected.lat, selected.lon, generation, callback);
+    };
+    search.onerror = function() {
+      untrackRequest(search);
+      if (requestIsCurrent(search)) callback(null, 'Unable to reach OpenStreetMap for the destination search.');
+    };
+    search.ontimeout = function() {
+      untrackRequest(search);
+      if (requestIsCurrent(search)) callback(null, 'Destination search timed out.');
+    };
+    sendRateLimited(search, 'nominatim', 'EnableOpenStreetMap', callback);
+  }
+
+  if (hasOriginLat && hasOriginLon) {
+    continueFromOrigin(explicitLat, explicitLon, 'specified coordinates (' + explicitLat + ', ' + explicitLon + ')');
+    return;
+  }
+
+  if (origin) {
+    var originSearch = new XMLHttpRequest();
+    trackRequest(originSearch, generation);
+    originSearch.open('GET', NOMINATIM_SEARCH_URL + '?format=jsonv2&limit=1&q=' + encodeURIComponent(origin), true);
+    originSearch.setRequestHeader('Accept', 'application/json');
+    originSearch.setRequestHeader('User-Agent', 'PebbleAIAssistant/1.0');
+    originSearch.timeout = 15000;
+    originSearch.onload = function() {
+      untrackRequest(originSearch);
+      if (!requestIsCurrent(originSearch)) return;
+      if (originSearch.status < 200 || originSearch.status >= 300) {
+        callback(null, 'Could not locate the directions origin (' + originSearch.status + ').');
+        return;
+      }
+      var originMatches;
+      try {
+        originMatches = JSON.parse(originSearch.responseText);
+      } catch (err) {
+        callback(null, 'OpenStreetMap returned an unreadable origin response.');
+        return;
+      }
+      if (!Array.isArray(originMatches)) {
+        callback(null, 'OpenStreetMap returned an unreadable origin response.');
+        return;
+      }
+      if (!originMatches.length) {
+        callback(null, 'Could not find the starting point ' + origin + '.');
+        return;
+      }
+      var resolvedOriginLat = parseCoordinate(originMatches[0].lat, 90);
+      var resolvedOriginLon = parseCoordinate(originMatches[0].lon, 180);
+      if (resolvedOriginLat === null || resolvedOriginLon === null) {
+        callback(null, 'OpenStreetMap returned invalid coordinates for the starting point.');
+        return;
+      }
+      var resolvedOriginLabel = String(originMatches[0].display_name || origin).replace(/^\s+|\s+$/g, '');
+      continueFromOrigin(resolvedOriginLat, resolvedOriginLon, resolvedOriginLabel || origin);
+    };
+    originSearch.onerror = function() {
+      untrackRequest(originSearch);
+      if (requestIsCurrent(originSearch)) callback(null, 'Unable to reach OpenStreetMap for the origin search.');
+    };
+    originSearch.ontimeout = function() {
+      untrackRequest(originSearch);
+      if (requestIsCurrent(originSearch)) callback(null, 'Origin search timed out.');
+    };
+    sendRateLimited(originSearch, 'nominatim', 'EnableOpenStreetMap', callback);
+    return;
+  }
+
+  if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
+    callback(null, 'Location unavailable on this phone.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(function(pos) {
+    var gpsLat = parseCoordinate(pos && pos.coords && pos.coords.latitude, 90);
+    var gpsLon = parseCoordinate(pos && pos.coords && pos.coords.longitude, 180);
+    if (gpsLat === null || gpsLon === null) {
+      callback(null, 'The phone returned invalid location coordinates.');
+      return;
+    }
+    continueFromOrigin(gpsLat, gpsLon, 'phone GPS');
+  }, function(err) {
+    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
+  }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
 }
 
 function parseNativeToolCalls(rawCalls) {
@@ -2535,6 +3023,14 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
     runWeatherTool(args, generation, callback);
   } else if (name === 'location') {
     runLocationTool(generation, callback);
+  } else if (name === 'openstreetmap') {
+    if (args.action === 'nearby_places') {
+      runNearbyPlacesTool(args, generation, callback);
+    } else if (args.action === 'directions') {
+      runDirectionsTool(args, generation, callback);
+    } else {
+      callback(null, 'OpenStreetMap action must be nearby_places or directions.');
+    }
   } else if (name === 'calculator') {
     if (!getBoolSetting('EnableCalculator', true)) {
       callback(null, 'Calculator disabled.');
@@ -2571,6 +3067,7 @@ function toolActivityLabel(call) {
     scrape: 'Firecrawl Scrape',
     weather: 'Weather',
     location: 'Location',
+    openstreetmap: 'OpenStreetMap',
     calculator: 'Calculator',
     choice: 'Choice',
     health: 'Health',
@@ -2583,6 +3080,12 @@ function toolActivityLabel(call) {
   }
   if (name === 'location') {
     return label + ': phone GPS';
+  }
+  if (name === 'openstreetmap' && args.action === 'nearby_places' && args.query) {
+    return label + ': ' + clip(String(args.query), 48);
+  }
+  if (name === 'openstreetmap' && args.action === 'directions' && args.destination) {
+    return label + ': ' + clip(String(args.destination), 48);
   }
   if (name === 'search' && args.query) {
     return label + ': ' + clip(args.query, 60);
@@ -3239,6 +3742,14 @@ Pebble.addEventListener('appmessage', function(e) {
     return;
   }
 
+  if (e.payload && e.payload.ToggleOpenStreetMap) {
+    var openStreetMapEnabled = toggleBoolSetting('EnableOpenStreetMap', false);
+    sendToWatch({ Status: openStreetMapEnabled ? 'OpenStreetMap on' : 'OpenStreetMap off' });
+    sendToolStatesToWatch();
+    sendStatsToWatch();
+    return;
+  }
+
   if (e.payload && e.payload.ToggleMemory) {
     var memoryEnabled = toggleBoolSetting('EnableMemory', true);
     sendToWatch({ Status: memoryEnabled ? 'Memory on' : 'Memory off' });
@@ -3376,6 +3887,7 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     OpenRouterApiKey: getSetting('OpenRouterApiKey', ''),
     OpenRouterModel: model,
     EnableLocation: getBoolSetting('EnableLocation', false),
+    EnableOpenStreetMap: getBoolSetting('EnableOpenStreetMap', false),
     EnableMemory: getBoolSetting('EnableMemory', true),
     EnableCalculator: getBoolSetting('EnableCalculator', true),
     EnableSearch: getBoolSetting('EnableSearch', false),
