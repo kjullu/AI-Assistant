@@ -94,7 +94,10 @@
       "VoiceLevel",
       "ResponseVibration",
       "WeatherUnits",
-      "CompanionReady"
+      "CompanionReady",
+      "EnablePlugins",
+      "EnablePluginActions",
+      "EnablePluginNotifications"
     ],
     "resources": {
       "media": []
@@ -102,8 +105,14 @@
     "usesPermissions": [
       "WatchMicrophone",
       "Location",
+      "Calendar",
       "Timeline",
       "Health",
+      "Notifications",
+      "ReadMusic",
+      "ControlMusic",
+      "LaunchApps",
+      "FindMyPhone",
       {
         "name": "Internet",
         "parameters": {

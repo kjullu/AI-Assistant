@@ -208,6 +208,27 @@ module.exports = [
         "defaultValue": false
       },
       {
+        "type": "toggle",
+        "messageKey": "EnablePlugins",
+        "label": "Experimental: Read Pebble Plugins",
+        "description": "Lets the AI list installed Pebble plugins and read their data, like weather, music, phone state, reminders, smart lights, or stocks. Data the AI reads is sent to OpenRouter. Needs Pebble app 1.16 or newer with Settings → Plugins → Plugins / permissions preview turned on, and a build packed with pack-plugin-pbw.py.",
+        "defaultValue": false
+      },
+      {
+        "type": "toggle",
+        "messageKey": "EnablePluginActions",
+        "label": "Experimental: Let AI Use Plugin Actions",
+        "description": "Lets the AI ask plugins to do things, like add a reminder, save a note, turn off a light, skip a song, ring your phone, or open a watch app. You confirm every action on the watch first. Needs Read Pebble Plugins.",
+        "defaultValue": false
+      },
+      {
+        "type": "toggle",
+        "messageKey": "EnablePluginNotifications",
+        "label": "Experimental: Let AI Read Notifications",
+        "description": "Lets the AI read phone notifications through the plugin system (Android only). Notification text is sent to OpenRouter. Needs Read Pebble Plugins.",
+        "defaultValue": false
+      },
+      {
         "type": "input",
         "messageKey": "BraveSearchApiKey",
         "label": "Brave Search API Key (Necessary for search)",
@@ -222,6 +243,21 @@ module.exports = [
         "attributes": {
           "placeholder": "Firecrawl API key, looks like: fc-..."
         }
+      }
+    ]
+  },
+  {
+    "type": "section",
+    "id": "plugin-list",
+    "items": [
+      {
+        "type": "heading",
+        "defaultValue": "Pebble Plugins"
+      },
+      {
+        "type": "text",
+        "id": "plugin-list-text",
+        "defaultValue": "Choose which installed plugins the AI may use. Needs Read Pebble Plugins."
       }
     ]
   },
