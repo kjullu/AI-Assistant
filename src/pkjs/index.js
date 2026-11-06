@@ -151,7 +151,7 @@ function cancelActiveRequests(notify, requestId) {
 function sendToWatch(dict, requestId) {
   var watchTextKeys = [
     'AssistantResponse', 'ToolActivity', 'ChoiceQuestion', 'ChoiceOptions',
-    'Error', 'Status', 'StatsText'
+    'Error', 'Status', 'StatsText', 'OpenSessions'
   ];
   for (var i = 0; i < watchTextKeys.length; i++) {
     var key = watchTextKeys[i];
@@ -221,13 +221,14 @@ function clip(text, maxLength) {
   if (text.length <= maxLength) {
     return text;
   }
+  if (maxLength > 0 && /[\ud800-\udbff]/.test(text.charAt(maxLength - 1)) &&
+      /[\udc00-\udfff]/.test(text.charAt(maxLength))) {
+    maxLength--;
+  }
   return text.substring(0, maxLength);
 }
 
-// Pebble's Gothic fonts cover useful accented text, but omit some punctuation
-// and mathematical glyphs that language models commonly produce. Keep the
-// original text everywhere else and use readable ASCII only at the watch edge.
-var PEBBLE_SUPPORTED_EMOJI = {
+var LEGACY_SUPPORTED_EMOJI = {
   0x1f600: true, 0x1f601: true, 0x1f602: true, 0x1f603: true,
   0x1f604: true, 0x1f605: true, 0x1f606: true, 0x1f607: true,
   0x1f608: true, 0x1f609: true, 0x1f60a: true, 0x1f60b: true,
@@ -254,18 +255,41 @@ function preserveSupportedEmoji(pair) {
   var high = pair.charCodeAt(0);
   var low = pair.charCodeAt(1);
   var codePoint = ((high - 0xd800) * 0x400) + (low - 0xdc00) + 0x10000;
-  return PEBBLE_SUPPORTED_EMOJI[codePoint] ? pair : '[emoji]';
+  return LEGACY_SUPPORTED_EMOJI[codePoint] ? pair : '[emoji]';
 }
 
+// The expanded font set shipped publicly in PebbleOS 4.30. If watch info
+// is unavailable, keep the readable legacy fallbacks rather than guessing.
+function hasExpandedEmoji() {
+  try {
+    var watch = Pebble.getActiveWatchInfo ? Pebble.getActiveWatchInfo() : null;
+    var firmware = watch && watch.firmware;
+    return !!firmware && (firmware.major > 4 ||
+      (firmware.major === 4 && firmware.minor >= 30));
+  } catch (error) {
+    return false;
+  }
+}
+
+// Let the watch's system fonts render emoji, including new glyphs and colors
+// supplied by PebbleOS updates. Keep readable ASCII substitutions for punctuation
+// that Gothic fonts omit. Original conversation text stays unchanged on the phone.
 function watchSafeText(text) {
-  return String(text || '')
+  text = String(text || '');
+  if (!hasExpandedEmoji()) {
+    text = text
+      .replace(/[\u200d\ufe0e\ufe0f]/g, '')
+      .replace(/[\u2611\u2705\u2714]/g, '[ok]')
+      .replace(/[\u274c\u274e]/g, '[x]')
+      .replace(/\u26a0/g, '[!]')
+      .replace(/[\ud800-\udbff][\udc00-\udfff]/g, preserveSupportedEmoji)
+      .replace(/(?:\[emoji\]){2,}/g, '[emoji]');
+  }
+  return text
     .replace(/[\u00a0\u2007\u202f]/g, ' ')
-    .replace(/[\u200b\u200c\u200d\u2060\ufeff\ufe0e\ufe0f]/g, '')
-    .replace(/[\u2611\u2705\u2713\u2714]/g, '[ok]')
-    .replace(/[\u2717\u2718\u274c\u274e]/g, '[x]')
-    .replace(/\u26a0/g, '[!]')
-    .replace(/[\ud800-\udbff][\udc00-\udfff]/g, preserveSupportedEmoji)
-    .replace(/(?:\[emoji\]){2,}/g, '[emoji]')
+    .replace(/[\u200b\u200c\u2060\ufeff]/g, '')
+    .replace(/[\u2713]/g, '[ok]')
+    .replace(/[\u2717\u2718]/g, '[x]')
     .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
     .replace(/[\u201c\u201d\u201e\u201f]/g, '"')
     .replace(/[\u2010\u2011\u2012\u2013\u2212]/g, '-')
@@ -292,8 +316,16 @@ function toolActivityHistoryText(toolActivity) {
 function sendAssistantReply(reply, requestId, toolActivity) {
   reply = watchSafeText(reply || 'No response.');
   var chunks = [];
-  for (var offset = 0; offset < reply.length; offset += RESPONSE_CHUNK_CHARS) {
-    chunks.push(reply.substring(offset, offset + RESPONSE_CHUNK_CHARS));
+  for (var offset = 0; offset < reply.length;) {
+    var end = Math.min(offset + Math.max(2, RESPONSE_CHUNK_CHARS), reply.length);
+    // AppMessage encodes each chunk separately. Keep surrogate pairs together
+    // so a four-byte UTF-8 emoji survives the trip to the watch.
+    if (end < reply.length && /[\ud800-\udbff]/.test(reply.charAt(end - 1)) &&
+        /[\udc00-\udfff]/.test(reply.charAt(end))) {
+      end--;
+    }
+    chunks.push(reply.substring(offset, end));
+    offset = end;
   }
   if (chunks.length === 0) {
     chunks.push('No response.');

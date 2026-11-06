@@ -10,6 +10,7 @@ Store pages: [Rebble](https://apps.rebble.io/en_US/application/6a9aa1dc7739b6000
 
 - Dictates prompts through Pebble's built-in voice input.
 - Streams compact assistant replies back to the watch.
+- Preserves emoji in watch text, using the glyphs and colors provided by the installed PebbleOS. PebbleOS 4.41.1 adds color emoji and hundreds of redrawn emoji; firmware below 4.30 uses readable text fallbacks for unsupported emoji. Monochrome screens display emoji without color.
 - Keeps recent turns as conversation context and stores up to 20 conversations locally on the phone.
 - Shows the five most recent saved conversations on the watch.
 - Lets the model use enabled tools repeatedly, with independent calls executed in parallel when possible.
