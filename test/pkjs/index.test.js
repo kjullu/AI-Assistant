@@ -6,6 +6,18 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../../src/pkjs/index.js'), 'utf8');
 
+test('each new phone runtime announces startup before ordinary stats and settings', () => {
+  const first = createRuntime();
+  first.listeners.ready();
+  assert.equal(first.sentMessages[0].CompanionReady, 1);
+  const restarted = createRuntime();
+  restarted.listeners.ready();
+  assert.equal(restarted.sentMessages[0].CompanionReady, 1);
+  assert.match(restarted.storage.get('DebugLog'), /Phone companion started/);
+  restarted.context.sendToolStatesToWatch();
+  assert.equal(restarted.sentMessages.filter(message => message.CompanionReady).length, 1);
+});
+
 function createRuntime(settings = {}) {
   const listeners = {};
   const requests = [];

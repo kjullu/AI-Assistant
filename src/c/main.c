@@ -89,6 +89,7 @@ static bool s_cancel_pending;
 static bool s_clear_session_pending;
 static uint32_t s_active_request_id;
 static bool s_response_started;
+static int32_t s_next_response_chunk;
 static bool s_show_settings;
 static bool s_show_sessions;
 static bool s_show_new_session;
@@ -1071,6 +1072,7 @@ static void clear_watch_session(void) {
   s_show_new_session = false;
   s_request_active = false;
   s_response_started = false;
+  s_next_response_chunk = 0;
   s_auto_follow_chat = true;
   update_display("Ready");
 }
@@ -1666,6 +1668,7 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
     s_active_request_id = 1;
   }
   s_response_started = false;
+  s_next_response_chunk = 0;
   if (s_chat_history[0] != '\0') {
     append_chat_history("\n\n");
   }
@@ -1704,8 +1707,45 @@ static void send_prompt(const char *prompt) {
   }
 }
 
+// A final empty packet can arrive after earlier text packets were lost.
+static bool accept_response_chunk(int32_t index) {
+  // Chunk zero also starts a replacement reply after a tool round or fallback.
+  if (index != 0 && index != s_next_response_chunk) {
+    const char *message = "Reply interrupted. Reconnect and try again.";
+    utf8_copy(s_assistant_response, sizeof(s_assistant_response), message);
+    append_chat_history("\n\n");
+    append_chat_history(message);
+    s_request_active = false;
+    s_cancel_pending = false;
+    if (++s_active_request_id == 0) s_active_request_id = 1;
+    update_display("Reply interrupted");
+    vibes_double_pulse();
+    return false;
+  }
+  s_next_response_chunk = index + 1;
+  return true;
+}
+
+static void companion_restarted(void) {
+  if (!s_request_active && !s_cancel_pending) return;
+  s_request_active = false;
+  s_cancel_pending = false;
+  if (++s_active_request_id == 0) s_active_request_id = 1;
+  close_choice_screen();
+  const char *message = "Connection lost. Reconnect and try again.";
+  utf8_copy(s_assistant_response, sizeof(s_assistant_response), message);
+  append_chat_history("\n\n");
+  append_chat_history(message);
+  update_display("Request interrupted");
+  vibes_double_pulse();
+}
+
 // Receive status, errors, and response chunks from PebbleKit JS.
 static void inbox_received_callback(DictionaryIterator *iter, void *context) {
+  if (dict_find(iter, MESSAGE_KEY_CompanionReady)) {
+    companion_restarted();
+    return;
+  }
   //USR: Define suff...
   //AI: Look up any known fields that may be present in this incoming AppMessage.
   Tuple *status_tuple = dict_find(iter, MESSAGE_KEY_Status);
@@ -1788,6 +1828,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   //USR: if response_tuple is true do:
   //AI: If the message includes assistant text, process it.
   if (response_tuple) {
+    if (chunk_index_tuple && !accept_response_chunk(chunk_index_tuple->value->int32)) {
+      return;
+    }
     //USR: se if AI respnse
     //AI: A chunk index means the reply is arriving in multiple AppMessages.
     if (chunk_index_tuple) {
@@ -1944,6 +1987,23 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   update_display(status);
 }
 
+static void phone_connection_changed(bool connected) {
+  if (connected) return;
+#ifdef HAS_MIC_STREAM
+  s_phone_ready = false;
+#endif
+  if (!s_request_active && !s_cancel_pending) return;
+
+  s_request_active = false;
+  s_cancel_pending = false;
+  // Invalidate queued replies from the interrupted turn before reconnecting.
+  if (++s_active_request_id == 0) s_active_request_id = 1;
+  close_choice_screen();
+  append_chat_history("\n\nConnection lost. Reconnect and try again.");
+  update_display("Phone disconnected");
+  vibes_double_pulse();
+}
+
 static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult reason, void *context) {
 #ifdef HAS_MIC_STREAM
   Tuple *voice_end = dict_find(iter, MESSAGE_KEY_VoiceEnd);
@@ -1956,6 +2016,8 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
     return;
   }
 #endif
+  Tuple *request_id = dict_find(iter, MESSAGE_KEY_RequestId);
+  if (request_id && request_id->value->uint32 != s_active_request_id) return;
   if (dict_find(iter, MESSAGE_KEY_Prompt)) {
     s_request_active = false;
     update_display("Send failed");
@@ -1973,6 +2035,8 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
 }
 
 static void outbox_sent_callback(DictionaryIterator *iter, void *context) {
+  Tuple *request_id = dict_find(iter, MESSAGE_KEY_RequestId);
+  if (request_id && request_id->value->uint32 != s_active_request_id) return;
   if (dict_find(iter, MESSAGE_KEY_CancelRequest)) {
     s_cancel_pending = false;
     s_active_request_id++;
@@ -2824,6 +2888,9 @@ static void init(void) {
     s_response_vibe = (ResponseVibe)persist_read_int(PERSIST_KEY_RESPONSE_VIBE);
   }
   window_stack_push(s_window, true); //USR: Make our window appear on the screen
+  connection_service_subscribe((ConnectionHandlers) {
+    .pebble_app_connection_handler = phone_connection_changed
+  });
   //AI: Push the window onto Pebble's window stack so it appears on screen, with animation.
 
   if (s_show_first_run) {
@@ -2838,6 +2905,7 @@ static void init(void) {
 
 // Release resources before the app exits.
 static void deinit(void) {
+  connection_service_unsubscribe();
 #ifdef HAS_MIC_STREAM
   voice_cancel_timers();
   mic_stream_to_phone_stop();
