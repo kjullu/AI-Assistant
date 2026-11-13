@@ -127,6 +127,7 @@ static int s_choice_selection;
 static int16_t s_choice_scroll_offset;
 static char s_choice_answer_buffer[MAX_CHOICE_TEXT + 8];
 static bool s_choice_waiting_dictation;
+static bool s_choice_dictation_cancelled;
 static Layer *s_choice_layer;
 
 // Custom speech-to-text: stream the microphone to PebbleKit JS, which transcribes it through
@@ -155,6 +156,7 @@ static void set_voice_ui(VoiceUi ui);
 static void show_voice_failure(const char *message);
 static void fail_voice_delivery(const char *message);
 static void voice_cancel_timers(void);
+static void cancel_voice_recording(void);
 #endif
 static void start_voice_input(bool for_choice);
 #ifdef HAS_MIC_STREAM
@@ -818,7 +820,22 @@ static void open_sessions_screen(void) {
 
 static void close_choice_screen(void) {
   s_show_choice = false;
-  s_choice_waiting_dictation = false;
+  // Keep the callback associated with this choice until the dictation modal returns.
+  if (s_choice_waiting_dictation) {
+    s_choice_dictation_cancelled = true;
+  }
+#ifdef HAS_MIC_STREAM
+  if (s_voice_waiting_for_phone && s_voice_waiting_for_choice) {
+    s_voice_waiting_for_phone = false;
+    if (s_voice_phone_wait_timer) {
+      app_timer_cancel(s_voice_phone_wait_timer);
+      s_voice_phone_wait_timer = NULL;
+    }
+  }
+  if (s_voice_for_choice && s_voice_ui != VoiceUiHidden) {
+    cancel_voice_recording();
+  }
+#endif
   s_choice_question[0] = '\0';
   s_choice_option_count = 0;
   s_choice_selection = 0;
@@ -2172,6 +2189,10 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
                                char *transcription, void *context) {
   if (s_choice_waiting_dictation) {
     s_choice_waiting_dictation = false;
+    if (s_choice_dictation_cancelled) {
+      s_choice_dictation_cancelled = false;
+      return;
+    }
     if (status == DictationSessionStatusSuccess) {
       handle_voice_transcript(transcription, true);
     }
@@ -2191,6 +2212,9 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
 }
 
 static void start_pebble_dictation(bool for_choice) {
+  if (s_choice_waiting_dictation) {
+    return;
+  }
   s_choice_waiting_dictation = for_choice;
   dictation_session_start(s_dictation_session);
 }
