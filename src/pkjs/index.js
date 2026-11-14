@@ -84,6 +84,7 @@ var pendingHealthGeneration = 0;
 var pendingHealthRequestId = 0;
 var pendingHealthCallback = null;
 var pendingHealthTimer = null;
+var activePluginSubscriptions = [];
 
 function debugLog(message) {
   var line = new Date().toISOString() + ' ' + message;
@@ -199,6 +200,7 @@ function cancelActiveRequests(notify, requestId) {
   activeRequests = [];
   clearPendingChoice();
   clearPendingHealth();
+  stopPluginSubscriptions();
   sendQueue = sendQueue.filter(function(item) {
     return !item.requestId || item.requestId !== requestId;
   });
@@ -1218,6 +1220,9 @@ function saveSettings(convertedSettings, rawSettings) {
   var enableChoice = settingValue(convertedSettings, rawSettings, 'EnableChoice', messageKeys.EnableChoice);
   var enableTimeline = settingValue(convertedSettings, rawSettings, 'EnableTimeline', messageKeys.EnableTimeline);
   var enableHealth = settingValue(convertedSettings, rawSettings, 'EnableHealth', messageKeys.EnableHealth);
+  var enablePlugins = settingValue(convertedSettings, rawSettings, 'EnablePlugins', messageKeys.EnablePlugins);
+  var enablePluginActions = settingValue(convertedSettings, rawSettings, 'EnablePluginActions', messageKeys.EnablePluginActions);
+  var enablePluginNotifications = settingValue(convertedSettings, rawSettings, 'EnablePluginNotifications', messageKeys.EnablePluginNotifications);
   var reasoningEffort = settingValue(convertedSettings, rawSettings, 'ReasoningEffort', messageKeys.ReasoningEffort);
   var openRouterProvider = settingValue(convertedSettings, rawSettings, 'OpenRouterProvider', messageKeys.OpenRouterProvider);
   var openRouterSort = settingValue(convertedSettings, rawSettings, 'OpenRouterSort', messageKeys.OpenRouterSort);
@@ -1273,6 +1278,15 @@ function saveSettings(convertedSettings, rawSettings) {
   if (enableHealth !== undefined) {
     localStorage.setItem('EnableHealth', String(enableHealth ? 1 : 0));
   }
+  if (enablePlugins !== undefined) {
+    localStorage.setItem('EnablePlugins', String(enablePlugins ? 1 : 0));
+  }
+  if (enablePluginActions !== undefined) {
+    localStorage.setItem('EnablePluginActions', String(enablePluginActions ? 1 : 0));
+  }
+  if (enablePluginNotifications !== undefined) {
+    localStorage.setItem('EnablePluginNotifications', String(enablePluginNotifications ? 1 : 0));
+  }
   if (reasoningEffort !== undefined) {
     localStorage.setItem('ReasoningEffort', String(reasoningEffort));
   }
@@ -1309,6 +1323,7 @@ function saveSettings(convertedSettings, rawSettings) {
   if (sessionsText !== undefined) {
     saveSessionsFromText(sessionsText);
   }
+  savePluginToggles(rawSettings);
   saveEditableStats(statsUsedCredits, statsMessages, statsSearches);
 }
 
@@ -1347,6 +1362,14 @@ function buildSystemPrompt() {
 
   if (healthAvailable) {
     lines.push('Use Health only when the user asks about their Health data. Dates are inclusive local calendar dates. It returns watch-recorded steps, active time, distance, sleep, calories, and historical average/minimum/maximum heart rate when supported; ranges including today also return current activity and heart rate. Treat it as informational, not medical advice.');
+  }
+
+  if (pluginsAvailable()) {
+    lines.push('Pebble plugins are experimental phone-side data sources and actions. Call plugins_list first to see what is installed, then plugin_read with a category and item from that list. Common sources: weather/location (the user\'s saved weather places, in their units; prefer it over the Weather tool for those places), calendar/event, phone/phone_state (phone battery), music/track (now playing), finance/stock, home/room_lights and home/light. Only read data the user asked about.' +
+      (getBoolSetting('EnablePluginNotifications', false) ? ' notifications/notification holds phone notifications; read it only when the user asks about their notifications.' : ''));
+    if (pluginActionsAvailable()) {
+      lines.push('Use plugin_action only when the user asks for something to be done, such as adding a reminder or task (create_reminder, add_task), saving a note (create_note), controlling lights, controlling music, ringing the phone, or opening a watch app (launch_app needs an app UUID you already know). Use the exact plugin UUID, action name, and argument schema from plugins_list. The user confirms every action on the watch; if they decline, do not retry it.');
+    }
   }
 
   if (memoryAvailable) {
@@ -1424,6 +1447,21 @@ function buildToolDefinitions() {
       from: { type: 'string', description: 'Start date in YYYY-MM-DD form.' },
       to: { type: 'string', description: 'End date in YYYY-MM-DD form.' }
     }, ['from', 'to']));
+  }
+  if (pluginsAvailable()) {
+    tools.push(functionTool('plugins_list', 'List installed Pebble plugins with their data sources and actions.', {}, []));
+    tools.push(functionTool('plugin_read', 'Read current data from a Pebble plugin source.', {
+      category: { type: 'string', description: 'Source category, for example weather.' },
+      item: { type: 'string', description: 'Source item, for example location.' },
+      properties: { type: 'array', items: { type: 'string' }, description: 'Optional property names to read.' }
+    }, ['category', 'item']));
+    if (pluginActionsAvailable()) {
+      tools.push(functionTool('plugin_action', 'Ask a Pebble plugin to run an action after the user confirms on the watch.', {
+        plugin: { type: 'string', description: 'Plugin UUID from plugins_list.' },
+        action: { type: 'string', description: 'Action name from plugins_list.' },
+        args: { type: 'object', description: 'Arguments matching the action parameter schema.' }
+      }, ['plugin', 'action']));
+    }
   }
   if (getBoolSetting('EnableMemory', true)) {
     tools.push(functionTool('memory', 'Add or replace durable notes about the user.', {
@@ -3072,6 +3110,10 @@ function executeChoiceTool(args, generation, requestId, callback) {
     options = ['Yes', 'No'];
   }
   options = options.map(function(option) { return clip(String(option), 30); });
+  showChoicePrompt(question, options, generation, requestId, callback);
+}
+
+function showChoicePrompt(question, options, generation, requestId, callback) {
   pendingChoiceGeneration = generation;
   pendingChoiceRequestId = requestId;
   pendingChoiceCallback = callback;
@@ -3115,6 +3157,534 @@ function executeHealthTool(args, generation, requestId, callback) {
   sendToWatch({ Status: 'Reading health...', HealthRequest: from + '|' + to }, requestId);
 }
 
+var PLUGIN_TIMEOUT_MS = 15000;
+var PLUGIN_ACTION_TIMEOUT_MS = 20000;
+var MAX_PLUGIN_INSTANCES = 12;
+var MAX_PLUGIN_SERIES_VALUES = 24;
+var MAX_PLUGIN_RESULT_CHARS = 3500;
+var MAX_CONFIRM_BYTES = 230; // The watch question buffer is 256 bytes.
+var pluginConfirmCounter = 0;
+var PLUGIN_UNAVAILABLE_TEXT = 'Pebble plugins are unavailable. They need Pebble app 1.16 or newer with Settings → Plugins → Plugins / permissions preview turned on, and an app build packed with pack-plugin-pbw.py.';
+
+var PLUGIN_TOGGLE_PREFIX = 'PluginOn_';
+
+function getDisabledPlugins() {
+  try {
+    var list = JSON.parse(localStorage.getItem('DisabledPlugins') || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function pluginEnabled(uuid) {
+  return getDisabledPlugins().indexOf(String(uuid || '').toLowerCase()) === -1;
+}
+
+function enabledPlugins(plugins) {
+  return plugins.filter(function(plugin) { return plugin && pluginEnabled(plugin.uuid); });
+}
+
+function savePluginToggles(rawSettings) {
+  if (!rawSettings) {
+    return;
+  }
+  var disabled = getDisabledPlugins();
+  Object.keys(rawSettings).forEach(function(key) {
+    if (key.indexOf(PLUGIN_TOGGLE_PREFIX) !== 0) {
+      return;
+    }
+    var uuid = key.slice(PLUGIN_TOGGLE_PREFIX.length).toLowerCase();
+    var raw = rawSettings[key];
+    var on = raw && typeof raw === 'object' ? raw.value : raw;
+    var index = disabled.indexOf(uuid);
+    if (on && index !== -1) {
+      disabled.splice(index, 1);
+    } else if (!on && index === -1) {
+      disabled.push(uuid);
+    }
+  });
+  localStorage.setItem('DisabledPlugins', JSON.stringify(disabled));
+}
+
+function pluginToggleDescription(plugin) {
+  var sources = (Array.isArray(plugin.sources) ? plugin.sources : []).map(function(source) {
+    return source && pluginSourceText({ category: source.category, items: source.items, item: source.item });
+  }).filter(Boolean);
+  var actions = (Array.isArray(plugin.actions) ? plugin.actions : []).map(function(action) {
+    return action && action.name;
+  }).filter(Boolean);
+  var parts = [];
+  if (sources.length) parts.push('Reads: ' + sources.join(', '));
+  if (actions.length) parts.push('Actions: ' + actions.join(', '));
+  return clip(parts.join('. ') || 'No sources or actions.', 300);
+}
+
+// Settings toggles are built from the installed plugins each time the settings page opens.
+function configurePluginList(callback) {
+  var section = clay.config ? findClayItem(clay.config, 'plugin-list') : null;
+  if (!section) {
+    callback();
+    return;
+  }
+  section.items = section.items.filter(function(item) { return item.messageKey === undefined || item.messageKey.indexOf(PLUGIN_TOGGLE_PREFIX) !== 0; });
+  var text = findClayItem(section.items, 'plugin-list-text');
+  loadPlugins(function(plugins, error) {
+    if (error || !plugins.length) {
+      if (text) text.defaultValue = error || 'No Pebble plugins are installed.';
+      callback();
+      return;
+    }
+    if (text) text.defaultValue = 'Choose which installed plugins the AI may use. Needs Read Pebble Plugins.';
+    for (var i = 0; i < plugins.length; i++) {
+      var plugin = plugins[i];
+      if (!plugin || !plugin.uuid) continue;
+      var key = PLUGIN_TOGGLE_PREFIX + String(plugin.uuid).toLowerCase();
+      section.items.push({
+        type: 'toggle',
+        messageKey: key,
+        label: clip(String(plugin.name || plugin.uuid), 60),
+        description: pluginToggleDescription(plugin),
+        defaultValue: true
+      });
+      clay.setSettings(key, pluginEnabled(plugin.uuid));
+    }
+    callback();
+  });
+}
+
+function pluginsAvailable() {
+  return getBoolSetting('EnablePlugins', false);
+}
+
+function pluginActionsAvailable() {
+  return pluginsAvailable() && getBoolSetting('EnablePluginActions', false);
+}
+
+function pluginCategoryAllowed(category) {
+  var normalized = String(category || '').toLowerCase().replace(/^\s+|\s+$/g, '');
+  return normalized !== 'notifications' || getBoolSetting('EnablePluginNotifications', false);
+}
+
+function stopPluginSubscriptions() {
+  var subscriptions = activePluginSubscriptions;
+  activePluginSubscriptions = [];
+  for (var i = 0; i < subscriptions.length; i++) {
+    try {
+      subscriptions[i].unsubscribe();
+    } catch (err) {
+      debugLog('Plugin unsubscribe failed: ' + err.message);
+    }
+  }
+}
+
+// enumeratePlugins is documented as returning an array; accept a Promise too while the API is in preview.
+function loadPlugins(callback) {
+  if (typeof Pebble.enumeratePlugins !== 'function') {
+    callback(null, PLUGIN_UNAVAILABLE_TEXT);
+    return;
+  }
+  var result;
+  try {
+    result = Pebble.enumeratePlugins();
+  } catch (err) {
+    callback(null, 'Could not list plugins: ' + err.message);
+    return;
+  }
+  if (result && typeof result.then === 'function') {
+    result.then(function(list) {
+      callback(Array.isArray(list) ? list : [], null);
+    }, function(err) {
+      callback(null, 'Could not list plugins: ' + (err && err.message ? err.message : String(err)));
+    });
+    return;
+  }
+  callback(Array.isArray(result) ? result : [], null);
+}
+
+function pluginSourceText(source) {
+  var items = Array.isArray(source.items) ? source.items : (source.item ? [source.item] : []);
+  var properties = source.properties && typeof source.properties === 'object' ? Object.keys(source.properties) : [];
+  return items.map(function(item) { return source.category + '/' + item; }).join(', ') +
+    (properties.length ? ' [' + properties.join(', ') + ']' : '');
+}
+
+function formatPluginList(plugins) {
+  if (plugins.length === 0) {
+    return 'No Pebble plugins are available. ' + PLUGIN_UNAVAILABLE_TEXT;
+  }
+  var hidden = plugins.length - enabledPlugins(plugins).length;
+  plugins = enabledPlugins(plugins);
+  if (plugins.length === 0) {
+    return 'All installed Pebble plugins are turned off in phone settings.';
+  }
+  var showActions = pluginActionsAvailable();
+  var lines = [];
+  for (var i = 0; i < plugins.length; i++) {
+    var plugin = plugins[i] || {};
+    var sources = (Array.isArray(plugin.sources) ? plugin.sources : []).filter(function(source) {
+      return source && pluginCategoryAllowed(source.category);
+    });
+    var actions = showActions && Array.isArray(plugin.actions) ? plugin.actions : [];
+    lines.push('Plugin "' + clip(String(plugin.name || 'Unnamed'), 60) + '" uuid=' + plugin.uuid);
+    for (var j = 0; j < sources.length; j++) {
+      lines.push('  source ' + clip(pluginSourceText(sources[j]), 300));
+    }
+    for (var k = 0; k < actions.length; k++) {
+      var action = actions[k] || {};
+      lines.push('  action ' + action.name + (action.description ? ': ' + clip(String(action.description), 120) : '') +
+        (action.parameters ? ' params=' + clip(JSON.stringify(action.parameters), 400) : ''));
+    }
+  }
+  if (hidden) {
+    lines.push(hidden + ' more plugin(s) are turned off by the user and cannot be used.');
+  }
+  return clip(lines.join('\n'), MAX_PLUGIN_RESULT_CHARS * 2);
+}
+
+function runPluginsListTool(callback) {
+  if (!pluginsAvailable()) {
+    callback(null, 'Pebble plugins disabled.');
+    return;
+  }
+  loadPlugins(function(plugins, error) {
+    if (error) {
+      callback(null, error);
+    } else {
+      callback(formatPluginList(plugins), null);
+    }
+  });
+}
+
+function pluginShapeText(shape, value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (shape === 'timestamp') {
+    return new Date(Number(value) * 1000).toString();
+  }
+  if (shape === 'boolean') {
+    return value ? 'yes' : 'no';
+  }
+  return String(value);
+}
+
+function pluginSeriesText(series) {
+  var shapes = ['longText', 'shortText', 'numericValue', 'timestamp', 'boolean'];
+  for (var i = 0; i < shapes.length; i++) {
+    var data = series[shapes[i]];
+    if (!data || !Array.isArray(data.values)) {
+      continue;
+    }
+    var values = data.values.slice(0, MAX_PLUGIN_SERIES_VALUES).map(function(value) {
+      var text = pluginShapeText(shapes[i], value);
+      return text === null ? '-' : text;
+    });
+    var unit = shapes[i] === 'numericValue' && data.unit ? ' ' + data.unit : '';
+    var axis = series.start ? ' from ' + new Date(series.start * 1000).toString() +
+      (series.stepSec ? ' every ' + series.stepSec + 's' : '') : '';
+    return 'series' + axis + unit + ': ' + values.join(', ');
+  }
+  return null;
+}
+
+function pluginPropertyText(property) {
+  if (!property || typeof property !== 'object') {
+    return null;
+  }
+  if (property.series) {
+    return pluginSeriesText(property.series);
+  }
+  if (property.longText && property.longText.text) {
+    return property.longText.text;
+  }
+  if (property.shortText && property.shortText.text) {
+    return property.shortText.text;
+  }
+  if (property.numericValue && property.numericValue.value !== undefined) {
+    return property.numericValue.value + (property.numericValue.unit ? ' ' + property.numericValue.unit : '');
+  }
+  if (property.timestamp && property.timestamp.value !== undefined) {
+    return pluginShapeText('timestamp', property.timestamp.value);
+  }
+  if (property.boolean && property.boolean.value !== undefined) {
+    return pluginShapeText('boolean', property.boolean.value);
+  }
+  return null;
+}
+
+function formatPluginEnvelope(category, item, envelope) {
+  var instances = envelope && Array.isArray(envelope.instances) ? envelope.instances : [];
+  var lines = ['Plugin data for ' + category + '/' + item + (envelope && envelope.pluginUuid ? ' from plugin ' + envelope.pluginUuid : '') + ':'];
+  if (instances.length === 0) {
+    lines.push('No entries.');
+  }
+  for (var i = 0; i < instances.length && i < MAX_PLUGIN_INSTANCES; i++) {
+    var properties = instances[i] && instances[i].properties || {};
+    var parts = [];
+    var names = Object.keys(properties);
+    for (var j = 0; j < names.length; j++) {
+      var text = pluginPropertyText(properties[names[j]]);
+      if (text !== null) {
+        parts.push(names[j] + '=' + clip(String(text), 400));
+      }
+    }
+    lines.push('- [' + instances[i].instanceId + '] ' + (parts.length ? parts.join('; ') : 'no readable properties'));
+  }
+  if (instances.length > MAX_PLUGIN_INSTANCES) {
+    lines.push('(' + (instances.length - MAX_PLUGIN_INSTANCES) + ' more entries omitted)');
+  }
+  return clip(lines.join('\n'), MAX_PLUGIN_RESULT_CHARS);
+}
+
+function pluginErrorText(prefix, err) {
+  if (!err) {
+    return prefix + '.';
+  }
+  return prefix + ' (' + (err.code || 'UNKNOWN') + ')' + (err.message ? ': ' + clip(String(err.message), 200) : '.') +
+    (err.code === 'PERMISSION_DENIED' ? ' The user may need to allow it in the Pebble app, then try again.' : '');
+}
+
+function runPluginReadTool(args, generation, callback) {
+  if (!pluginsAvailable()) {
+    callback(null, 'Pebble plugins disabled.');
+    return;
+  }
+  var category = String(args.category || '').replace(/^\s+|\s+$/g, '');
+  var item = String(args.item || '').replace(/^\s+|\s+$/g, '');
+  if (!category || !item) {
+    callback(null, 'plugin_read needs a category and an item.');
+    return;
+  }
+  if (!pluginCategoryAllowed(category)) {
+    callback(null, 'Reading notifications is turned off in phone settings.');
+    return;
+  }
+  if (typeof Pebble.subscribeToSource !== 'function') {
+    callback(null, PLUGIN_UNAVAILABLE_TEXT);
+    return;
+  }
+
+  var finished = false;
+  var subscription = null;
+  var timer = null;
+
+  function stop() {
+    if (!subscription) {
+      return;
+    }
+    var index = activePluginSubscriptions.indexOf(subscription);
+    if (index !== -1) {
+      activePluginSubscriptions.splice(index, 1);
+    }
+    try {
+      subscription.unsubscribe();
+    } catch (err) {
+      debugLog('Plugin unsubscribe failed: ' + err.message);
+    }
+    subscription = null;
+  }
+
+  function finish(content, error) {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
+    stop();
+    if (generation !== requestGeneration) {
+      return;
+    }
+    // Settings can change while a read is pending; never hand back data that is now turned off.
+    if (!pluginsAvailable() || !pluginCategoryAllowed(category)) {
+      callback(null, 'Pebble plugin access was turned off.');
+      return;
+    }
+    callback(content, error);
+  }
+
+  function servesItem(plugin) {
+    return (Array.isArray(plugin.sources) ? plugin.sources : []).some(function(source) {
+      var items = source && Array.isArray(source.items) ? source.items : (source && source.item ? [source.item] : []);
+      return source && source.category === category && items.indexOf(item) !== -1;
+    });
+  }
+
+  var config = {
+    category: category,
+    item: item,
+    onData: function(envelope) {
+      if (envelope && envelope.pluginUuid && !pluginEnabled(envelope.pluginUuid)) {
+        finish(null, 'The plugin that answered is turned off in phone settings.');
+        return;
+      }
+      finish(formatPluginEnvelope(category, item, envelope), null);
+    },
+    onError: function(err) {
+      finish(null, pluginErrorText('Plugin read failed', err));
+    }
+  };
+  if (Array.isArray(args.properties) && args.properties.length) {
+    config.properties = args.properties.slice(0, 20).map(String);
+  }
+
+  loadPlugins(function(plugins) {
+    // Without the list, the onData check above still blocks turned-off plugins.
+    var servers = (plugins || []).filter(function(plugin) { return plugin && servesItem(plugin); });
+    var allowed = enabledPlugins(servers);
+    if (servers.length && !allowed.length) {
+      finish(null, 'Every plugin serving ' + category + '/' + item + ' is turned off in phone settings.');
+      return;
+    }
+    if (allowed.length < servers.length) {
+      config.plugin = allowed[0].uuid;
+    }
+    startSubscription();
+  });
+
+  function startSubscription() {
+    if (finished) {
+      return;
+    }
+    timer = setTimeout(function() {
+      finish(null, 'Plugin read timed out.');
+    }, PLUGIN_TIMEOUT_MS);
+    try {
+      subscription = Pebble.subscribeToSource(config);
+    } catch (err) {
+      finish(null, 'Plugin read failed: ' + err.message);
+      return;
+    }
+    if (finished) {
+      // onData can arrive before subscribeToSource returns.
+      stop();
+    } else if (subscription) {
+      activePluginSubscriptions.push(subscription);
+    }
+  }
+}
+
+function findPluginAction(plugins, pluginId, actionName) {
+  var wanted = String(pluginId || '').toLowerCase();
+  for (var i = 0; i < plugins.length; i++) {
+    var plugin = plugins[i] || {};
+    if (String(plugin.uuid || '').toLowerCase() !== wanted) {
+      continue;
+    }
+    var actions = Array.isArray(plugin.actions) ? plugin.actions : [];
+    for (var j = 0; j < actions.length; j++) {
+      if (actions[j] && actions[j].name === actionName) {
+        return { plugin: plugin, action: actions[j] };
+      }
+    }
+    return { plugin: plugin, action: null };
+  }
+  return null;
+}
+
+function pluginActionSummary(args) {
+  var keys = Object.keys(args);
+  if (keys.length === 0) {
+    return '';
+  }
+  return keys.map(function(key) {
+    var value = args[key];
+    return key + ': ' + (typeof value === 'object' ? JSON.stringify(value) : String(value));
+  }).join(', ');
+}
+
+function invokePluginAction(pluginUuid, actionName, actionArgs, generation, callback) {
+  var finished = false;
+  function finish(content, error) {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    clearTimeout(timer);
+    if (generation === requestGeneration) {
+      callback(content, error);
+    }
+  }
+  var timer = setTimeout(function() {
+    finish(null, 'Plugin action timed out. It may still have run.');
+  }, PLUGIN_ACTION_TIMEOUT_MS);
+  var pending;
+  try {
+    pending = Pebble.invokeAction({ plugin: pluginUuid, action: actionName, args: actionArgs });
+  } catch (err) {
+    finish(null, 'Plugin action failed: ' + err.message);
+    return;
+  }
+  Promise.resolve(pending).then(function(result) {
+    if (result && result.ok) {
+      finish('Action ' + actionName + ' done.' + (result.text ? ' Plugin said: ' + clip(String(result.text), 300) : ''), null);
+    } else {
+      finish(null, pluginErrorText('Plugin action failed', result));
+    }
+  }, function(err) {
+    finish(null, 'Plugin action failed: ' + (err && err.message ? err.message : String(err)));
+  });
+}
+
+function runPluginActionTool(args, generation, requestId, callback) {
+  if (!pluginActionsAvailable()) {
+    callback(null, 'Plugin actions disabled.');
+    return;
+  }
+  if (typeof Pebble.invokeAction !== 'function') {
+    callback(null, PLUGIN_UNAVAILABLE_TEXT);
+    return;
+  }
+  var actionName = String(args.action || '');
+  var actionArgs = args.args && typeof args.args === 'object' && !Array.isArray(args.args) ? args.args : {};
+  loadPlugins(function(plugins, error) {
+    if (generation !== requestGeneration) {
+      return;
+    }
+    if (error) {
+      callback(null, error);
+      return;
+    }
+    var match = findPluginAction(enabledPlugins(plugins), args.plugin, actionName);
+    if (!match) {
+      callback(null, 'No enabled plugin has uuid ' + clip(String(args.plugin || ''), 60) + '. Call plugins_list.');
+      return;
+    }
+    if (!match.action) {
+      callback(null, 'Plugin "' + match.plugin.name + '" has no action named ' + clip(actionName, 60) + '. Call plugins_list.');
+      return;
+    }
+    var pluginName = clip(String(match.plugin.name || 'a plugin'), 40);
+    var summary = pluginActionSummary(actionArgs);
+    var question = 'Let ' + pluginName + ' run ' + actionName + (summary ? '? ' + summary : '?');
+    // The user must see every argument, so refuse rather than clip the confirmation.
+    if (unescape(encodeURIComponent(question)).length > MAX_CONFIRM_BYTES) {
+      callback(null, 'Action arguments are too long to show on the watch for confirmation. Use shorter arguments.');
+      return;
+    }
+    if (pendingChoiceCallback) {
+      callback(null, 'Another watch prompt is already active. Try the action again after it is answered.');
+      return;
+    }
+    // A numbered label stops a late answer to an earlier prompt from approving this one.
+    var runLabel = 'Run it #' + (++pluginConfirmCounter);
+    showChoicePrompt(question, [runLabel, 'Cancel'], generation, requestId, function(answer) {
+        if (answer !== 'User selected: ' + runLabel) {
+          callback('The user did not confirm the action, so it was not run.', null);
+          return;
+        }
+        if (!pluginActionsAvailable()) {
+          callback(null, 'Plugin actions were turned off.');
+          return;
+        }
+        sendToWatch({ Status: 'Running action...' }, requestId);
+        invokePluginAction(match.plugin.uuid, actionName, actionArgs, generation, callback);
+      });
+  });
+}
+
 function executeNamedTool(call, generation, requestId, executionId, callback) {
   var name = call.name;
   var args = call.arguments;
@@ -3156,6 +3726,12 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
       applyMemoryChanges(args);
       callback('Memory updated.', null);
     }
+  } else if (name === 'plugins_list') {
+    runPluginsListTool(callback);
+  } else if (name === 'plugin_read') {
+    runPluginReadTool(args, generation, callback);
+  } else if (name === 'plugin_action') {
+    runPluginActionTool(args, generation, requestId, callback);
   } else if (name === 'timeline') {
     if (!getBoolSetting('EnableTimeline', true)) {
       callback(null, 'Timeline disabled.');
@@ -3180,7 +3756,10 @@ function toolActivityLabel(call) {
     choice: 'Choice',
     health: 'Health',
     memory: 'Memory',
-    timeline: 'Timeline'
+    timeline: 'Timeline',
+    plugins_list: 'Plugins',
+    plugin_read: 'Plugin',
+    plugin_action: 'Plugin action'
   };
   var label = (labels[name] || name) + ' tool';
   if (name === 'weather' && args.place) {
@@ -3200,6 +3779,12 @@ function toolActivityLabel(call) {
   }
   if (name === 'scrape' && args.url) {
     return label + ': ' + clip(args.url, 60);
+  }
+  if (name === 'plugin_read' && args.category) {
+    return label + ': ' + clip(String(args.category) + '/' + String(args.item || ''), 60);
+  }
+  if (name === 'plugin_action' && args.action) {
+    return label + ': ' + clip(String(args.action), 60);
   }
   if (name === 'calculator' && args.expression) {
     return label + ': ' + clip(args.expression, 60);
@@ -4005,12 +4590,23 @@ function openConfiguration(model, reasoningInfo, providerEndpoints) {
     EnableChoice: getBoolSetting('EnableChoice', true),
     EnableTimeline: getBoolSetting('EnableTimeline', true),
     EnableHealth: getBoolSetting('EnableHealth', false),
+    EnablePlugins: getBoolSetting('EnablePlugins', false),
+    EnablePluginActions: getBoolSetting('EnablePluginActions', false),
+    EnablePluginNotifications: getBoolSetting('EnablePluginNotifications', false),
     ResetFirstRunNotice: false,
     BraveSearchApiKey: getSetting('BraveSearchApiKey', ''),
     FirecrawlApiKey: getSetting('FirecrawlApiKey', ''),
     DebugLog: localStorage.getItem('DebugLog') || ''
   });
-  Pebble.openURL(clay.generateUrl());
+  var opened = false;
+  function open() {
+    if (opened) return;
+    opened = true;
+    Pebble.openURL(clay.generateUrl());
+  }
+  // Open settings anyway if the plugin list is slow, just without plugin toggles.
+  setTimeout(open, 3000);
+  configurePluginList(open);
 }
 
 Pebble.addEventListener('showConfiguration', function() {

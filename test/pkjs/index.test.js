@@ -1626,6 +1626,258 @@ test('AppMessage retries stop after three failures and unblock the queue', () =>
   assert.equal(sends[3].dict.Status, 'Second');
 });
 
+const HUE_PLUGIN = {
+  uuid: 'aaaa-hue',
+  name: 'Hue',
+  sources: [{ category: 'home', items: ['room_lights'], properties: { name: ['shortText'], on: ['boolean'] } }],
+  actions: [{ name: 'set_on', description: 'Turn a room on or off.', parameters: { type: 'object', properties: { on: { type: 'boolean' } } } }]
+};
+const NOTIFY_PLUGIN = {
+  uuid: 'bbbb-builtin',
+  name: 'Notifications',
+  sources: [{ category: 'notifications', items: ['notification'] }],
+  actions: []
+};
+
+function pluginRuntime(settings, pebble = {}) {
+  const runtime = createRuntime({ EnablePlugins: '1', ...settings });
+  runtime.context.Pebble.enumeratePlugins = () => [HUE_PLUGIN, NOTIFY_PLUGIN];
+  Object.assign(runtime.context.Pebble, pebble);
+  return runtime;
+}
+
+function runTool(runtime, name, args) {
+  let result;
+  runtime.context.executeNamedTool({ name, arguments: args }, runtime.context.requestGeneration, 3, 'x', (content, error) => {
+    result = { content, error };
+  });
+  return result;
+}
+
+test('plugin tools are offered only when enabled, and actions need their own setting', () => {
+  const names = runtime => runtime.context.buildToolDefinitions().map(tool => tool.function.name);
+  assert.equal(names(createRuntime()).includes('plugins_list'), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(names(pluginRuntime()).filter(name => name.startsWith('plugin')))), ['plugins_list', 'plugin_read']);
+  assert.ok(names(pluginRuntime({ EnablePluginActions: '1' })).includes('plugin_action'));
+  assert.match(pluginRuntime().context.buildSystemPrompt(), /plugins_list/);
+});
+
+test('plugin list hides notification sources and actions unless allowed', () => {
+  const listed = runTool(pluginRuntime(), 'plugins_list', {}).content;
+  assert.match(listed, /home\/room_lights \[name, on\]/);
+  assert.doesNotMatch(listed, /notifications\/notification/);
+  assert.doesNotMatch(listed, /set_on/);
+  const full = runTool(pluginRuntime({ EnablePluginActions: '1', EnablePluginNotifications: '1' }), 'plugins_list', {}).content;
+  assert.match(full, /notifications\/notification/);
+  assert.match(full, /action set_on: Turn a room on or off/);
+});
+
+test('plugin read formats instances and unsubscribes', () => {
+  let unsubscribed = 0;
+  let config;
+  const runtime = pluginRuntime({}, {
+    subscribeToSource(value) {
+      config = value;
+      return { unsubscribe() { unsubscribed++; } };
+    }
+  });
+  let result;
+  runtime.context.runPluginReadTool({ category: 'home', item: 'room_lights' }, runtime.context.requestGeneration, (content, error) => {
+    result = { content, error };
+  });
+  assert.equal(result, undefined);
+  config.onData({
+    pluginUuid: 'aaaa-hue',
+    instances: [{
+      instanceId: '3',
+      properties: {
+        name: { shortText: { text: 'Kitchen' } },
+        on: { boolean: { value: true }, shortText: { text: 'On' } },
+        brightness: { numericValue: { value: 64, unit: '%' } },
+        hourly: { series: { start: 0, stepSec: 3600, numericValue: { values: [1, null, 3], unit: 'C' } } }
+      }
+    }]
+  });
+  assert.equal(result.error, null);
+  assert.match(result.content, /\[3\] name=Kitchen; on=On; brightness=64 %; hourly=series.* C: 1, -, 3/);
+  assert.equal(unsubscribed, 1);
+  assert.equal(runtime.context.activePluginSubscriptions.length, 0);
+});
+
+test('plugin read handles data delivered before subscribe returns', () => {
+  let unsubscribed = 0;
+  const runtime = pluginRuntime({}, {
+    subscribeToSource(config) {
+      config.onData({ instances: [] });
+      return { unsubscribe() { unsubscribed++; } };
+    }
+  });
+  const result = runTool(runtime, 'plugin_read', { category: 'phone', item: 'phone_state' });
+  assert.match(result.content, /No entries/);
+  assert.equal(unsubscribed, 1);
+  assert.equal(runtime.context.activePluginSubscriptions.length, 0);
+});
+
+test('plugin read refuses notifications unless allowed', () => {
+  let subscribed = false;
+  const runtime = pluginRuntime({}, { subscribeToSource() { subscribed = true; return { unsubscribe() {} }; } });
+  const result = runTool(runtime, 'plugin_read', { category: ' Notifications ', item: 'notification' });
+  assert.match(result.error, /notifications is turned off/);
+  assert.equal(subscribed, false);
+});
+
+test('plugin read reports errors and missing plugin support', () => {
+  const runtime = pluginRuntime({}, {
+    subscribeToSource(config) {
+      config.onError({ code: 'PERMISSION_DENIED', message: 'Not allowed yet' });
+      return { unsubscribe() {} };
+    }
+  });
+  assert.match(runTool(runtime, 'plugin_read', { category: 'calendar', item: 'event' }).error, /PERMISSION_DENIED.*allow it in the Pebble app/);
+  const old = createRuntime({ EnablePlugins: '1' });
+  assert.match(runTool(old, 'plugin_read', { category: 'calendar', item: 'event' }).error, /1\.16/);
+});
+
+test('cancelling a request stops plugin subscriptions', () => {
+  let unsubscribed = 0;
+  const runtime = pluginRuntime({}, { subscribeToSource() { return { unsubscribe() { unsubscribed++; } }; } });
+  runTool(runtime, 'plugin_read', { category: 'music', item: 'track' });
+  assert.equal(runtime.context.activePluginSubscriptions.length, 1);
+  runtime.context.cancelActiveRequests(false, 0);
+  assert.equal(unsubscribed, 1);
+});
+
+test('plugin actions run only after watch confirmation', async () => {
+  const invoked = [];
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, {
+    invokeAction(config) {
+      invoked.push(config);
+      return Promise.resolve({ ok: true, text: 'Kitchen off.' });
+    }
+  });
+  prompt(runtime, 'Turn off the kitchen', 9);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'plugin_action', arguments: { plugin: 'AAAA-HUE', action: 'set_on', args: { on: false } } }],
+    reply: ''
+  });
+  const question = runtime.sentMessages.find(message => message.ChoiceQuestion);
+  assert.match(question.ChoiceQuestion, /Let Hue run set_on\? on: false/);
+  assert.equal(question.ChoiceOptions, 'Run it #1\nCancel');
+  assert.equal(invoked.length, 0);
+
+  runtime.listeners.appmessage({ payload: { ChoiceAnswer: 'Run it #1', RequestId: 9 } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked)), [{ plugin: 'aaaa-hue', action: 'set_on', args: { on: false } }]);
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.match(followup.messages.at(-1).content, /set_on done\. Plugin said: Kitchen off\./);
+});
+
+test('declined or unknown plugin actions are not run', () => {
+  let invoked = false;
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, { invokeAction() { invoked = true; return Promise.resolve({ ok: true }); } });
+  assert.match(runTool(runtime, 'plugin_action', { plugin: 'aaaa-hue', action: 'delete_all' }).error, /no action named delete_all/);
+  assert.match(runTool(runtime, 'plugin_action', { plugin: 'nope', action: 'set_on' }).error, /No enabled plugin/);
+
+  prompt(runtime, 'Lights', 4);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'plugin_action', arguments: { plugin: 'aaaa-hue', action: 'set_on', args: {} } }],
+    reply: ''
+  });
+  runtime.listeners.appmessage({ payload: { ChoiceAnswer: 'Cancel', RequestId: 4 } });
+  assert.equal(invoked, false);
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.match(followup.messages.at(-1).content, /did not confirm/);
+});
+
+test('plugin actions are refused when the setting is off', () => {
+  const runtime = pluginRuntime({}, { invokeAction() { throw new Error('should not run'); } });
+  assert.match(runTool(runtime, 'plugin_action', { plugin: 'aaaa-hue', action: 'set_on' }).error, /disabled/);
+});
+
+test('a late answer to an expired confirmation cannot approve a newer action', () => {
+  let invoked = false;
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, { invokeAction() { invoked = true; return Promise.resolve({ ok: true }); } });
+  const action = { name: 'plugin_action', arguments: { plugin: 'aaaa-hue', action: 'set_on', args: { on: true } } };
+  prompt(runtime, 'Lights', 6);
+  streamResponse(modelRequests(runtime)[0], { toolCalls: [action], reply: '' });
+  runtime.timers.at(-1)();
+  streamResponse(modelRequests(runtime)[1], { toolCalls: [action], reply: '' });
+  assert.match(runtime.sentMessages.filter(message => message.ChoiceOptions).at(-1).ChoiceOptions, /Run it #2/);
+  runtime.listeners.appmessage({ payload: { ChoiceAnswer: 'Run it #1', RequestId: 6 } });
+  assert.equal(invoked, false);
+});
+
+test('actions whose arguments cannot fit the confirmation are refused', () => {
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, { invokeAction() { throw new Error('should not run'); } });
+  const result = runTool(runtime, 'plugin_action', { plugin: 'aaaa-hue', action: 'set_on', args: { note: 'x'.repeat(200), recipient: 'someone' } });
+  assert.match(result.error, /too long/);
+  assert.equal(runtime.sentMessages.some(message => message.ChoiceQuestion), false);
+});
+
+test('turning settings off revokes pending plugin reads and confirmations', () => {
+  let config;
+  const runtime = pluginRuntime({ EnablePluginNotifications: '1', EnablePluginActions: '1' }, {
+    subscribeToSource(value) { config = value; return { unsubscribe() {} }; },
+    invokeAction() { throw new Error('should not run'); }
+  });
+  let read;
+  runtime.context.runPluginReadTool({ category: 'notifications', item: 'notification' }, runtime.context.requestGeneration, (content, error) => { read = { content, error }; });
+  runtime.storage.set('EnablePluginNotifications', '0');
+  config.onData({ instances: [{ instanceId: '1', properties: { title: { longText: { text: 'secret' } } } }] });
+  assert.equal(read.content, null);
+  assert.match(read.error, /turned off/);
+
+  prompt(runtime, 'Lights', 8);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'plugin_action', arguments: { plugin: 'aaaa-hue', action: 'set_on', args: {} } }],
+    reply: ''
+  });
+  runtime.storage.set('EnablePluginActions', '0');
+  const label = runtime.sentMessages.find(message => message.ChoiceOptions).ChoiceOptions.split('\n')[0];
+  runtime.listeners.appmessage({ payload: { ChoiceAnswer: label, RequestId: 8 } });
+  assert.match(JSON.parse(modelRequests(runtime)[1].body).messages.at(-1).content, /turned off/);
+});
+
+test('settings list each installed plugin as a toggle and save turned-off plugins', () => {
+  const runtime = pluginRuntime();
+  const section = { id: 'plugin-list', items: [{ type: 'text', id: 'plugin-list-text', defaultValue: '' }] };
+  runtime.context.clay.config = [section];
+  const set = {};
+  runtime.context.clay.setSettings = (key, value) => { set[key] = value; };
+  let done = false;
+  runtime.context.configurePluginList(() => { done = true; });
+  assert.equal(done, true);
+  const toggles = section.items.filter(item => item.type === 'toggle');
+  assert.deepEqual(toggles.map(item => item.label), ['Hue', 'Notifications']);
+  assert.match(toggles[0].description, /Reads: home\/room_lights.*Actions: set_on/);
+  assert.equal(set['PluginOn_aaaa-hue'], true);
+
+  runtime.context.savePluginToggles({ 'PluginOn_aaaa-hue': { value: false }, 'PluginOn_bbbb-builtin': { value: true } });
+  assert.deepEqual(JSON.parse(runtime.storage.get('DisabledPlugins')), ['aaaa-hue']);
+  runtime.context.configurePluginList(() => {});
+  assert.equal(section.items.filter(item => item.type === 'toggle').length, 2);
+  assert.equal(set['PluginOn_aaaa-hue'], false);
+});
+
+test('turned-off plugins are hidden, cannot act, and cannot answer reads', () => {
+  let config;
+  const runtime = pluginRuntime({ EnablePluginActions: '1', DisabledPlugins: '["aaaa-hue"]' }, {
+    subscribeToSource(value) { config = value; return { unsubscribe() {} }; },
+    invokeAction() { throw new Error('should not run'); }
+  });
+  const listed = runTool(runtime, 'plugins_list', {}).content;
+  assert.doesNotMatch(listed, /Hue/);
+  assert.match(listed, /1 more plugin\(s\) are turned off/);
+  assert.match(runTool(runtime, 'plugin_action', { plugin: 'aaaa-hue', action: 'set_on' }).error, /No enabled plugin/);
+  assert.match(runTool(runtime, 'plugin_read', { category: 'home', item: 'room_lights' }).error, /turned off in phone settings/);
+  assert.equal(config, undefined);
+
+  let result;
+  runtime.context.runPluginReadTool({ category: 'weather', item: 'location' }, runtime.context.requestGeneration, (content, error) => { result = { content, error }; });
+  config.onData({ pluginUuid: 'AAAA-HUE', instances: [] });
+  assert.match(result.error, /plugin that answered is turned off/);
+});
+
 test('changing the clock does not regenerate timestamps in existing history', () => {
   const runtime = createRuntime({ ExtraSystemPrompt: 'Answer in Danish.' });
   const history = [

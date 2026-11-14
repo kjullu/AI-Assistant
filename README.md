@@ -53,6 +53,9 @@ The home screen shows your remaining OpenRouter credit and how many messages and
 | Health | Off | Reads steps, sleep, heart rate, and similar data from Pebble Health |
 | Brave Search | Off | Web search, needs a Brave Search API key |
 | Firecrawl Scrape | Off | Reads web pages, needs a Firecrawl API key; phone settings only |
+| Pebble Plugins | Off | Experimental. Reads data from installed Pebble plugins (weather, phone battery, music, stocks, smart lights, reminders); phone settings only |
+| Plugin Actions | Off | Experimental. Lets plugins do things, like add a reminder, turn off a light, or ring your phone. You confirm each one on the watch |
+| Plugin Notifications | Off | Experimental. Reads phone notifications through plugins (Android only) |
 
 The phone settings also let you pick a provider and routing priority, set reasoning effort, add your own system prompt, and edit saved conversations. Reopen settings after changing the model so the provider and reasoning options refresh.
 
@@ -72,6 +75,7 @@ Enabled tools also send data to other services:
 - Calculator: currency codes go to Frankfurter. Everything else runs on the phone.
 - Timeline: pin content goes to Pebble's timeline API.
 - Health: the requested Health data goes to the model. It is information, not medical advice.
+- Pebble Plugins: whatever the model reads from a plugin goes to the model, and action arguments go to the plugin that runs them.
 
 API keys, memory notes, up to 20 saved conversations, statistics, and settings are stored locally in the Pebble phone app.
 
@@ -85,6 +89,10 @@ Build with Pebble SDK 4.44:
 npm install
 pebble build
 ```
+
+### Experimental plugin build
+
+The plugin tools need Pebble mobile app 1.16 or newer with **Settings → Plugins → Plugins / permissions preview** turned on. A normal `pebble build` with Pebble Tool 5.1 or newer (SDK 4.44) already packs the permissions from `package.json` that the plugin system needs.
 
 Run the PebbleKit JS tests:
 
