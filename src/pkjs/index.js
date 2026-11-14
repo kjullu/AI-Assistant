@@ -924,11 +924,11 @@ function refreshRemainingCredits() {
         var stats = getMonthlyStats();
         stats.remainingCredits = totalCredits - totalUsage;
         saveMonthlyStats(stats);
-        sendStatsToWatch();
       }
     } catch (err) {
       console.log('Credits parse failed: ' + err.message);
     }
+    sendStatsToWatch();
   };
 
   request.onerror = function() {
@@ -1151,18 +1151,19 @@ function applyMemoryChanges(memory) {
       if (!op || typeof op !== 'object') {
         continue;
       }
-      var index = parseInt(op.index, 10);
-      if (isNaN(index) || index < 0 || index >= notes.length) {
-        debugLog('Memory replace ignored: invalid index ' + op.index);
+      // The model sees notes numbered from 1 in buildNotesContext().
+      var number = parseInt(op.index, 10);
+      if (isNaN(number) || number < 1 || number > notes.length) {
+        debugLog('Memory replace ignored: invalid note number ' + op.index);
         continue;
       }
       var text = clip(String(op.text || ''), MAX_NOTE_CHARS).replace(/^\s+|\s+$/g, '');
       if (!text) {
-        debugLog('Memory replace ignored: empty text at index ' + index);
+        debugLog('Memory replace ignored: empty text for note ' + number);
         continue;
       }
-      notes[index] = { text: text, createdAt: new Date().toISOString() };
-      debugLog('Memory replaced index ' + index);
+      notes[number - 1] = { text: text, createdAt: new Date().toISOString() };
+      debugLog('Memory replaced note ' + number);
     }
   }
 
@@ -1427,7 +1428,7 @@ function buildToolDefinitions() {
   if (getBoolSetting('EnableMemory', true)) {
     tools.push(functionTool('memory', 'Add or replace durable notes about the user.', {
       add: { type: 'array', items: { type: 'string' } },
-      replace: { type: 'array', items: { type: 'object', properties: { index: { type: 'integer' }, text: { type: 'string' } }, required: ['index', 'text'], additionalProperties: false } }
+      replace: { type: 'array', items: { type: 'object', properties: { index: { type: 'integer', description: 'The note number shown in the notes list; the first note is 1.' }, text: { type: 'string' } }, required: ['index', 'text'], additionalProperties: false } }
     }, []));
   }
   if (getBoolSetting('EnableCalculator', true)) {
@@ -1472,7 +1473,10 @@ function extractStreamableReply(content) {
 }
 
 function safeEvalExpression(expression) {
-  if (!/^[0-9+\-*/().,%\s]+$/.test(expression)) {
+  if (expression.indexOf(',') !== -1) {
+    throw new Error('Commas are not supported. Use "." for decimals and no thousands separators.');
+  }
+  if (!/^[0-9+\-*/().%\s]+$/.test(expression)) {
     throw new Error('Unsupported characters in expression');
   }
   var normalized = expression.replace(/%/g, '/100');
@@ -3075,6 +3079,8 @@ function executeChoiceTool(args, generation, requestId, callback) {
     if (pendingChoiceCallback && pendingChoiceGeneration === generation) {
       var timeoutCallback = pendingChoiceCallback;
       clearPendingChoice();
+      // Close the choice screen, or a late pick would be sent to nobody.
+      sendToWatch({ ChoiceCancel: 1 }, requestId);
       timeoutCallback(null, 'Choice prompt timed out.');
     }
   }, 60000);
