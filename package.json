@@ -103,30 +103,140 @@
       "media": []
     },
     "usesPermissions": [
-      "WatchMicrophone",
-      "Location",
-      "Calendar",
-      "Timeline",
-      "Health",
-      "Notifications",
-      "ReadMusic",
-      "ControlMusic",
-      "LaunchApps",
-      "FindMyPhone",
+      {
+        "name": "WatchMicrophone",
+        "reason": "To record voice messages on supported watches",
+        "required": false
+      },
+      {
+        "name": "Location",
+        "reason": "To find nearby places and read weather for your locations",
+        "required": false
+      },
+      {
+        "name": "Calendar",
+        "reason": "To answer questions about your calendar events",
+        "required": false
+      },
+      {
+        "name": "Timeline",
+        "reason": "To add timeline pins when you ask",
+        "required": false
+      },
+      {
+        "name": "Health",
+        "reason": "To answer questions about your watch-recorded health data",
+        "required": false
+      },
+      {
+        "name": "Notifications",
+        "reason": "To read phone notifications only when you enable it and ask",
+        "required": false
+      },
+      {
+        "name": "ReadMusic",
+        "reason": "To answer questions about what is playing",
+        "required": false
+      },
+      {
+        "name": "ControlMusic",
+        "reason": "To control playback after you confirm on the watch",
+        "required": false
+      },
+      {
+        "name": "LaunchApps",
+        "reason": "To open watch apps after you confirm on the watch",
+        "required": false
+      },
+      {
+        "name": "ReadApps",
+        "reason": "To find installed watch apps by name before opening them",
+        "required": false
+      },
+      {
+        "name": "FindMyPhone",
+        "reason": "To ring your phone after you confirm on the watch",
+        "required": false
+      },
       {
         "name": "Internet",
         "parameters": {
           "domains": [
-            "openrouter.ai",
-            "api.search.brave.com",
-            "api.firecrawl.dev",
-            "open-meteo.com",
-            "nominatim.openstreetmap.org",
-            "routing.openstreetmap.de",
-            "timeline-api.getpebble.com",
+            "openrouter.ai"
+          ]
+        },
+        "reason": "To send your messages and requested tool data to your AI model",
+        "required": true
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "api.search.brave.com"
+          ]
+        },
+        "reason": "To search the web when you ask",
+        "required": false
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "api.firecrawl.dev"
+          ]
+        },
+        "reason": "To read web pages when you ask",
+        "required": false
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "open-meteo.com"
+          ]
+        },
+        "reason": "To look up weather and forecasts",
+        "required": false
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "nominatim.openstreetmap.org"
+          ]
+        },
+        "reason": "To find places and addresses",
+        "required": false
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "routing.openstreetmap.de"
+          ]
+        },
+        "reason": "To get directions",
+        "required": false
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
+            "timeline-api.getpebble.com"
+          ]
+        },
+        "reason": "To add timeline pins when you ask",
+        "required": false
+      },
+      {
+        "name": "Internet",
+        "parameters": {
+          "domains": [
             "api.frankfurter.dev"
           ]
-        }
+        },
+        "reason": "To convert currencies",
+        "required": false
       }
     ]
   }

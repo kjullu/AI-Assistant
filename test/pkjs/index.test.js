@@ -1657,7 +1657,7 @@ function runTool(runtime, name, args) {
 test('plugin tools are offered only when enabled, and actions need their own setting', () => {
   const names = runtime => runtime.context.buildToolDefinitions().map(tool => tool.function.name);
   assert.equal(names(createRuntime()).includes('plugins_list'), false);
-  assert.deepEqual(JSON.parse(JSON.stringify(names(pluginRuntime()).filter(name => name.startsWith('plugin')))), ['plugins_list', 'plugin_read']);
+  assert.deepEqual(JSON.parse(JSON.stringify(names(pluginRuntime()).filter(name => name.startsWith('plugin')))), ['plugin_permission', 'plugins_list', 'plugin_read']);
   assert.ok(names(pluginRuntime({ EnablePluginActions: '1' })).includes('plugin_action'));
   assert.match(pluginRuntime().context.buildSystemPrompt(), /plugins_list/);
 });
@@ -1704,6 +1704,28 @@ test('plugin read formats instances and unsubscribes', () => {
   assert.equal(runtime.context.activePluginSubscriptions.length, 0);
 });
 
+test('plugin reads forward the requested limit and enforce it if the host ignores it', () => {
+  const instances = Array.from({ length: 21 }, (_, i) => ({ instanceId: String(i + 1) }));
+  const requested = [];
+  const runtime = pluginRuntime({}, {
+    subscribeToSource(config) {
+      requested.push(config.limit);
+      config.onData({ instances });
+      return { unsubscribe() {} };
+    }
+  });
+  const args = { category: 'calendar', item: 'event' };
+  for (const [limit, expected] of [[undefined, 12], [3, 3], [20, 20]]) {
+    const result = runTool(runtime, 'plugin_read', { ...args, limit });
+    assert.equal(result.error, null);
+    assert.equal(result.content.split('\n').filter(line => line.startsWith('- [')).length, expected);
+  }
+  for (const limit of [0, 201, 1.5, '20', null]) {
+    assert.match(runTool(runtime, 'plugin_read', { ...args, limit }).error, /integer from 1 to 200/);
+  }
+  assert.deepEqual(requested, [undefined, 3, 20]);
+});
+
 test('plugin read handles data delivered before subscribe returns', () => {
   let unsubscribed = 0;
   const runtime = pluginRuntime({}, {
@@ -1735,7 +1757,7 @@ test('plugin read reports errors and missing plugin support', () => {
   });
   assert.match(runTool(runtime, 'plugin_read', { category: 'calendar', item: 'event' }).error, /PERMISSION_DENIED.*allow it in the Pebble app/);
   const old = createRuntime({ EnablePlugins: '1' });
-  assert.match(runTool(old, 'plugin_read', { category: 'calendar', item: 'event' }).error, /1\.16/);
+  assert.match(runTool(old, 'plugin_read', { category: 'calendar', item: 'event' }).error, /1\.18\.0\.1/);
 });
 
 test('cancelling a request stops plugin subscriptions', () => {
@@ -2488,4 +2510,76 @@ test('cancel and retry suppress old transcription callbacks and preserve queued 
   assert.equal(delivered.RequestId, 11);
   begin(12);
   assert.equal(delivered.RequestId, 11, 'already queued results retain their original ID');
+});
+
+
+test('permission checks report all statuses without requesting access', async () => {
+  for (const state of ['granted', 'prompt', 'denied']) {
+    const checked = [];
+    const runtime = pluginRuntime({}, { permissions: { query(name) { checked.push(name); return Promise.resolve(state); } } });
+    const result = await new Promise(resolve => runtime.context.runPluginPermissionTool(
+      { permission: 'Calendar' }, runtime.context.requestGeneration, (content, error) => resolve({ content, error })));
+    assert.deepEqual(checked, ['Calendar']);
+    assert.equal(result.error, null);
+    assert.match(result.content, new RegExp('Calendar: ' + state));
+    if (state === 'prompt') assert.match(result.content, /approval.*Do not retry/);
+  }
+});
+
+test('permission checks handle missing APIs, failures, timeouts and revoked access', async () => {
+  assert.match(runTool(pluginRuntime(), 'plugin_permission', { permission: 'Calendar' }).error, /1\.18\.0\.1/);
+  assert.match(runTool(createRuntime(), 'plugin_permission', { permission: 'Calendar' }).error, /disabled/);
+  assert.match(runTool(pluginRuntime(), 'plugin_permission', {}).error, /needs a permission/);
+  for (const query of [() => { throw new Error('sync failure'); }, () => Promise.reject(new Error('async failure'))]) {
+    const runtime = pluginRuntime({}, { permissions: { query } });
+    const error = await new Promise(resolve => runtime.context.runPluginPermissionTool(
+      { permission: 'ReadApps' }, runtime.context.requestGeneration, (_, error) => resolve(error)));
+    assert.match(error, /Permission check failed.*failure/);
+  }
+  for (const change of ['cancel', 'disable', 'timeout']) {
+    let settle;
+    const runtime = pluginRuntime({}, { permissions: { query: () => new Promise(resolve => { settle = resolve; }) } });
+    const results = [];
+    runtime.context.runPluginPermissionTool({ permission: 'ReadApps' }, runtime.context.requestGeneration,
+      (content, error) => results.push({ content, error }));
+    if (change === 'cancel') runtime.context.requestGeneration++;
+    if (change === 'disable') runtime.storage.set('EnablePlugins', '0');
+    if (change === 'timeout') runtime.timers.at(-1)();
+    settle('granted');
+    await new Promise(resolve => setImmediate(resolve));
+    if (change === 'cancel') assert.equal(results.length, 0);
+    else {
+      assert.equal(results.length, 1);
+      assert.match(results[0].error, change === 'disable' ? /turned off/ : /timed out/);
+    }
+  }
+});
+
+test('installed watch apps can be read and launched with the discovered UUID after confirmation', async () => {
+  const plugin = { uuid: 'watch-state', name: 'Watch State',
+    sources: [{ category: 'watch', items: ['app'] }],
+    actions: [{ name: 'launch_app', parameters: { type: 'object', properties: { uuid: { type: 'string' } } } }] };
+  const calls = [];
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, {
+    enumeratePlugins: () => [plugin],
+    subscribeToSource(config) {
+      config.onData({ pluginUuid: 'watch-state', instances: [{ instanceId: 'app-uuid',
+        properties: { name: { shortText: { text: 'Timer' } }, type: { shortText: { text: 'watchapp' } } } }] });
+      return { unsubscribe() {} };
+    },
+    invokeAction(args) { calls.push(args); return Promise.resolve({ ok: true }); }
+  });
+  const read = runTool(runtime, 'plugin_read', { category: 'watch', item: 'app' });
+  assert.match(read.content, /app-uuid.*Timer/);
+  assert.match(runtime.context.buildSystemPrompt(), /read watch\/app to find the app UUID/);
+  prompt(runtime, 'Open Timer', 9);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'plugin_action', arguments: { plugin: 'watch-state', action: 'launch_app', args: { uuid: 'app-uuid' } } }], reply: ''
+  });
+  assert.equal(calls.length, 0);
+  const answer = runtime.sentMessages.find(message => message.ChoiceOptions).ChoiceOptions.split('\n')[0];
+  runtime.listeners.appmessage({ payload: { ChoiceAnswer: answer, RequestId: 9 } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.uuid, 'app-uuid');
 });

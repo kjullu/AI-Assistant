@@ -1,5 +1,7 @@
 # Unreleased
 
+- Update plugin integration for Pebble mobile app 1.18.0.1, with required and optional permission explanations, permission-status checks, and installed watch app discovery.
+
 - Add experimental, off-by-default Pebble plugin tools: list installed plugins, read their data, and run their actions after the user confirms on the watch.
 - Keep plugin notifications behind their own setting.
 - Add a Pebble Plugins section to phone settings with a toggle for each installed plugin.

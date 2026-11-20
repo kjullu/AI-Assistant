@@ -1364,10 +1364,10 @@ function buildSystemPrompt() {
   }
 
   if (pluginsAvailable()) {
-    lines.push('Pebble plugins are experimental phone-side data sources and actions. Call plugins_list first to see what is installed, then plugin_read with a category and item from that list. Common sources: weather/location (the user\'s saved weather places, in their units; prefer it over the Weather tool for those places), calendar/event, phone/phone_state (phone battery), music/track (now playing), finance/stock, home/room_lights and home/light. Only read data the user asked about.' +
+    lines.push('Pebble plugins are experimental phone-side data sources and actions. Call plugins_list first to see what is installed, then plugin_read with a category and item from that list. Common sources: weather/location (the user\'s saved weather places, in their units; prefer it over the Weather tool for those places), calendar/event, phone/phone_state (phone battery), music/track (now playing), finance/stock, home/room_lights, home/light, watch/app (installed watch apps), and preferences/units (display units and clock format). Only read data the user asked about. After PERMISSION_DENIED, use plugin_permission with the relevant permission name to check its status; prompt means the user must approve in the Pebble app, denied means they turned it off. Do not retry automatically or claim a permission is permanently denied.' +
       (getBoolSetting('EnablePluginNotifications', false) ? ' notifications/notification holds phone notifications; read it only when the user asks about their notifications.' : ''));
     if (pluginActionsAvailable()) {
-      lines.push('Use plugin_action only when the user asks for something to be done, such as adding a reminder or task (create_reminder, add_task), saving a note (create_note), controlling lights, controlling music, ringing the phone, or opening a watch app (launch_app needs an app UUID you already know). Use the exact plugin UUID, action name, and argument schema from plugins_list. The user confirms every action on the watch; if they decline, do not retry it.');
+      lines.push('Use plugin_action only when the user asks for something to be done, such as adding a reminder or task (create_reminder, add_task), saving a note (create_note), controlling lights, controlling music, ringing the phone, or opening a watch app (read watch/app to find the app UUID for launch_app; launch_previous_app returns to the previous app). Use the exact plugin UUID, action name, and argument schema from plugins_list. The user confirms every action on the watch; if they decline, do not retry it.');
     }
   }
 
@@ -1448,11 +1448,15 @@ function buildToolDefinitions() {
     }, ['from', 'to']));
   }
   if (pluginsAvailable()) {
+    tools.push(functionTool('plugin_permission', 'Check a Pebble permission without requesting or granting access. Use after a permission error.', {
+      permission: { type: 'string', description: 'Permission name, such as Calendar, ReadApps, Location, or Internet/openrouter.ai.' }
+    }, ['permission']));
     tools.push(functionTool('plugins_list', 'List installed Pebble plugins with their data sources and actions.', {}, []));
     tools.push(functionTool('plugin_read', 'Read current data from a Pebble plugin source.', {
       category: { type: 'string', description: 'Source category, for example weather.' },
       item: { type: 'string', description: 'Source item, for example location.' },
-      properties: { type: 'array', items: { type: 'string' }, description: 'Optional property names to read.' }
+      properties: { type: 'array', items: { type: 'string' }, description: 'Optional property names to read.' },
+      limit: { type: 'integer', minimum: 1, maximum: MAX_PLUGIN_REQUEST_LIMIT, description: 'Maximum entries to read. Choose the smallest count that answers the question. Omit to use the default. For larger reads, request only the properties you need.' }
     }, ['category', 'item']));
     if (pluginActionsAvailable()) {
       tools.push(functionTool('plugin_action', 'Ask a Pebble plugin to run an action after the user confirms on the watch.', {
@@ -3153,12 +3157,13 @@ function executeHealthTool(args, generation, requestId, callback) {
 
 var PLUGIN_TIMEOUT_MS = 15000;
 var PLUGIN_ACTION_TIMEOUT_MS = 20000;
-var MAX_PLUGIN_INSTANCES = 12;
+var DEFAULT_PLUGIN_INSTANCES = 12;
+var MAX_PLUGIN_REQUEST_LIMIT = 200;
 var MAX_PLUGIN_SERIES_VALUES = 24;
 var MAX_PLUGIN_RESULT_CHARS = 3500;
 var MAX_CONFIRM_BYTES = 230; // The watch question buffer is 256 bytes.
 var pluginConfirmCounter = 0;
-var PLUGIN_UNAVAILABLE_TEXT = 'Pebble plugins are unavailable. They need Pebble app 1.16 or newer with Settings → Plugins → Plugins / permissions preview turned on, and an app build packed with pack-plugin-pbw.py.';
+var PLUGIN_UNAVAILABLE_TEXT = 'Pebble plugins are unavailable. They need Pebble app 1.18.0.1 or newer with Settings → Plugins → Plugins / permissions preview turned on, and a build made with Pebble Tool 5.1 or newer (SDK 4.44).';
 
 var PLUGIN_TOGGLE_PREFIX = 'PluginOn_';
 
@@ -3407,13 +3412,13 @@ function pluginPropertyText(property) {
   return null;
 }
 
-function formatPluginEnvelope(category, item, envelope) {
+function formatPluginEnvelope(category, item, envelope, limit) {
   var instances = envelope && Array.isArray(envelope.instances) ? envelope.instances : [];
   var lines = ['Plugin data for ' + category + '/' + item + (envelope && envelope.pluginUuid ? ' from plugin ' + envelope.pluginUuid : '') + ':'];
   if (instances.length === 0) {
     lines.push('No entries.');
   }
-  for (var i = 0; i < instances.length && i < MAX_PLUGIN_INSTANCES; i++) {
+  for (var i = 0; i < instances.length && i < limit; i++) {
     var properties = instances[i] && instances[i].properties || {};
     var parts = [];
     var names = Object.keys(properties);
@@ -3425,10 +3430,13 @@ function formatPluginEnvelope(category, item, envelope) {
     }
     lines.push('- [' + instances[i].instanceId + '] ' + (parts.length ? parts.join('; ') : 'no readable properties'));
   }
-  if (instances.length > MAX_PLUGIN_INSTANCES) {
-    lines.push('(' + (instances.length - MAX_PLUGIN_INSTANCES) + ' more entries omitted)');
+  if (instances.length > limit) {
+    lines.push('(' + (instances.length - limit) + ' more entries omitted)');
   }
-  return clip(lines.join('\n'), MAX_PLUGIN_RESULT_CHARS);
+  var result = lines.join('\n');
+  if (result.length <= MAX_PLUGIN_RESULT_CHARS) return result;
+  var notice = '\n(Result truncated. Request fewer properties or entries.)';
+  return clip(result, MAX_PLUGIN_RESULT_CHARS - notice.length) + notice;
 }
 
 function pluginErrorText(prefix, err) {
@@ -3436,7 +3444,50 @@ function pluginErrorText(prefix, err) {
     return prefix + '.';
   }
   return prefix + ' (' + (err.code || 'UNKNOWN') + ')' + (err.message ? ': ' + clip(String(err.message), 200) : '.') +
-    (err.code === 'PERMISSION_DENIED' ? ' The user may need to allow it in the Pebble app, then try again.' : '');
+    (err.code === 'PERMISSION_DENIED' ? ' The user may need to allow it in the Pebble app, then try again. Check with plugin_permission; pending approval is not a permanent denial. Do not retry automatically.' : '');
+}
+
+function runPluginPermissionTool(args, generation, callback) {
+  if (!pluginsAvailable()) {
+    callback(null, 'Pebble plugins disabled.');
+    return;
+  }
+  var permission = String(args.permission || '').replace(/^\s+|\s+$/g, '');
+  if (!permission || permission.length > 250) {
+    callback(null, 'plugin_permission needs a permission name.');
+    return;
+  }
+  if (!Pebble.permissions || typeof Pebble.permissions.query !== 'function') {
+    callback(null, PLUGIN_UNAVAILABLE_TEXT);
+    return;
+  }
+  var finished = false;
+  var timer = setTimeout(function() { finish(null, 'Permission check timed out.'); }, PLUGIN_TIMEOUT_MS);
+  function finish(content, error) {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    if (generation !== requestGeneration) return;
+    if (!pluginsAvailable()) {
+      callback(null, 'Pebble plugin access was turned off.');
+      return;
+    }
+    callback(content, error);
+  }
+  try {
+    Promise.resolve(Pebble.permissions.query(permission)).then(function(state) {
+      if (state !== 'granted' && state !== 'prompt' && state !== 'denied') {
+        finish(null, 'Unknown permission status.');
+        return;
+      }
+      var guidance = state === 'granted' ? 'Allowed right now; this can change.' :
+        (state === 'prompt' ? 'Awaiting user approval in the Pebble app. Do not retry automatically.' :
+          'Turned off for this app. The user can change it in the Pebble app permissions.');
+      finish(permission + ': ' + state + '. ' + guidance, null);
+    }, function(err) { finish(null, pluginErrorText('Permission check failed', err)); });
+  } catch (err) {
+    finish(null, pluginErrorText('Permission check failed', err));
+  }
 }
 
 function runPluginReadTool(args, generation, callback) {
@@ -3448,6 +3499,11 @@ function runPluginReadTool(args, generation, callback) {
   var item = String(args.item || '').replace(/^\s+|\s+$/g, '');
   if (!category || !item) {
     callback(null, 'plugin_read needs a category and an item.');
+    return;
+  }
+  var limit = args.limit;
+  if (limit !== undefined && (typeof limit !== 'number' || limit % 1 !== 0 || limit < 1 || limit > MAX_PLUGIN_REQUEST_LIMIT)) {
+    callback(null, 'plugin_read limit must be an integer from 1 to ' + MAX_PLUGIN_REQUEST_LIMIT + '.');
     return;
   }
   if (!pluginCategoryAllowed(category)) {
@@ -3514,12 +3570,15 @@ function runPluginReadTool(args, generation, callback) {
         finish(null, 'The plugin that answered is turned off in phone settings.');
         return;
       }
-      finish(formatPluginEnvelope(category, item, envelope), null);
+      finish(formatPluginEnvelope(category, item, envelope, limit === undefined ? DEFAULT_PLUGIN_INSTANCES : limit), null);
     },
     onError: function(err) {
       finish(null, pluginErrorText('Plugin read failed', err));
     }
   };
+  if (limit !== undefined) {
+    config.limit = limit;
+  }
   if (Array.isArray(args.properties) && args.properties.length) {
     config.properties = args.properties.slice(0, 20).map(String);
   }
@@ -3548,7 +3607,7 @@ function runPluginReadTool(args, generation, callback) {
     try {
       subscription = Pebble.subscribeToSource(config);
     } catch (err) {
-      finish(null, 'Plugin read failed: ' + err.message);
+      finish(null, pluginErrorText('Plugin read failed', err));
       return;
     }
     if (finished) {
@@ -3608,7 +3667,7 @@ function invokePluginAction(pluginUuid, actionName, actionArgs, generation, call
   try {
     pending = Pebble.invokeAction({ plugin: pluginUuid, action: actionName, args: actionArgs });
   } catch (err) {
-    finish(null, 'Plugin action failed: ' + err.message);
+    finish(null, pluginErrorText('Plugin action failed', err));
     return;
   }
   Promise.resolve(pending).then(function(result) {
@@ -3618,7 +3677,7 @@ function invokePluginAction(pluginUuid, actionName, actionArgs, generation, call
       finish(null, pluginErrorText('Plugin action failed', result));
     }
   }, function(err) {
-    finish(null, 'Plugin action failed: ' + (err && err.message ? err.message : String(err)));
+    finish(null, pluginErrorText('Plugin action failed', err));
   });
 }
 
@@ -3722,6 +3781,8 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
     }
   } else if (name === 'plugins_list') {
     runPluginsListTool(callback);
+  } else if (name === 'plugin_permission') {
+    runPluginPermissionTool(args, generation, callback);
   } else if (name === 'plugin_read') {
     runPluginReadTool(args, generation, callback);
   } else if (name === 'plugin_action') {
@@ -3752,6 +3813,7 @@ function toolActivityLabel(call) {
     memory: 'Memory',
     timeline: 'Timeline',
     plugins_list: 'Plugins',
+    plugin_permission: 'Plugin permission',
     plugin_read: 'Plugin',
     plugin_action: 'Plugin action'
   };

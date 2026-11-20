@@ -92,7 +92,9 @@ pebble build
 
 ### Experimental plugin build
 
-The plugin tools need Pebble mobile app 1.16 or newer with **Settings → Plugins → Plugins / permissions preview** turned on. A normal `pebble build` with Pebble Tool 5.1 or newer (SDK 4.44) already packs the permissions from `package.json` that the plugin system needs.
+The plugin tools need Pebble mobile app 1.18.0.1 or newer with **Settings → Plugins → Plugins / permissions preview** turned on. A normal `pebble build` with Pebble Tool 5.1 or newer (SDK 4.44) already packs the permissions from `package.json` that the plugin system needs.
+
+Plugin permissions include explanations and are optional except for the AI connection to OpenRouter. Approve optional access in the Pebble app when using the matching tool. The AI can check permission status without requesting access, and can read the installed watch app list before asking you to confirm an app launch. Plugins remain a preview.
 
 Run the PebbleKit JS tests:
 

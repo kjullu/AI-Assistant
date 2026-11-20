@@ -48,3 +48,18 @@ test('OpenStreetMap has its own phone setting with a GPS disclosure', () => {
   assert.match(item.description, /Directions can start from a place you name/);
   assert.match(item.description, /phone location is used/);
 });
+
+
+test('permission prompts describe optional tools and require only the AI connection', () => {
+  const permissions = require('../../package.json').pebble.usesPermissions;
+  assert.ok(permissions.some(permission => permission.name === 'ReadApps'));
+  for (const permission of permissions) {
+    assert.equal(typeof permission.reason, 'string');
+    assert.ok(permission.reason.length > 0);
+    assert.equal(typeof permission.required, 'boolean');
+  }
+  const required = permissions.filter(permission => permission.required);
+  assert.equal(required.length, 1);
+  assert.equal(required[0].name, 'Internet');
+  assert.deepEqual(required[0].parameters.domains, ['openrouter.ai']);
+});
