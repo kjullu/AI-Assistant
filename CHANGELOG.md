@@ -1,3 +1,11 @@
+# Unreleased
+
+- Update plugin integration for Pebble mobile app 1.18.0.1, with required and optional permission explanations, permission-status checks, and installed watch app discovery.
+- Add experimental, off-by-default Pebble plugin tools: list installed plugins, read their data, and run their actions after the user confirms on the watch.
+- Keep plugin notifications behind their own setting.
+- Add a Pebble Plugins section to phone settings with a toggle for each installed plugin.
+- Declare the calendar, notification, music, app discovery, app-launch, and find-my-phone permissions the plugin tools use.
+
 # 0.5.0
 
 - Add OpenRouter voice input on Pebble Time 2, with a recording timer, adaptive level meter, and either a configurable speech model or direct audio to compatible chat models. Other watches keep using Pebble dictation.
