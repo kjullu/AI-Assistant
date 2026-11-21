@@ -2657,3 +2657,33 @@ test('late action discovery does not prompt after plugin actions are disabled', 
   assert.match((await result).error, /turned off/);
   assert.equal(runtime.sentMessages.some(message => message.ChoiceQuestion), false);
 });
+
+test('memory replace uses the note numbers shown to the model', () => {
+  const runtime = createRuntime();
+  // Built inside the app's own context, like the JSON the model sends.
+  vm.runInContext("addNotes(['first', 'second'])", runtime.context);
+  assert.match(runtime.context.buildNotesContext(), /1\. first\n2\. second/);
+
+  vm.runInContext("applyMemoryChanges({ replace: [{ index: 2, text: 'changed' }, { index: 0, text: 'ignored' }] })", runtime.context);
+
+  assert.equal(runtime.context.notesToText(), 'first\nchanged');
+});
+
+test('a timed-out choice closes the choice screen on the watch', () => {
+  const runtime = createRuntime();
+  prompt(runtime, 'Choose for me', 14);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'choice', arguments: { question: 'Pick', options: ['A', 'B'] } }],
+    reply: ''
+  });
+
+  runtime.timers.at(-1)();
+
+  assert.ok(runtime.sentMessages.some(message => message.ChoiceCancel === 1 && message.RequestId === 14));
+});
+
+test('calculator rejects commas instead of returning a wrong result', () => {
+  const runtime = createRuntime();
+  assert.throws(() => runtime.context.runCalculatorTool({ expression: '1,000 * 2' }), /Commas/);
+  assert.match(runtime.context.runCalculatorTool({ expression: '1000 * 2.5' }), /= 2500$/);
+});

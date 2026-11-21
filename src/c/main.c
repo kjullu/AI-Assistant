@@ -127,6 +127,7 @@ static int s_choice_selection;
 static int16_t s_choice_scroll_offset;
 static char s_choice_answer_buffer[MAX_CHOICE_TEXT + 8];
 static bool s_choice_waiting_dictation;
+static bool s_choice_dictation_cancelled;
 static Layer *s_choice_layer;
 
 // Custom speech-to-text: stream the microphone to PebbleKit JS, which transcribes it through
@@ -155,6 +156,7 @@ static void set_voice_ui(VoiceUi ui);
 static void show_voice_failure(const char *message);
 static void fail_voice_delivery(const char *message);
 static void voice_cancel_timers(void);
+static void cancel_voice_recording(void);
 #endif
 static void start_voice_input(bool for_choice);
 #ifdef HAS_MIC_STREAM
@@ -399,7 +401,8 @@ static int16_t layout_markdown_inline(GContext *ctx, const char *text, int16_t x
   const char *cursor = text ? text : "";
 
   while (*cursor) {
-    if (*cursor == '\\' && cursor[1] != '\0') {
+    // Only ASCII punctuation can be escaped, so paths like C:\Users keep their backslashes.
+    if (*cursor == '\\' && (unsigned char)cursor[1] < 0x80 && ispunct((unsigned char)cursor[1])) {
       char escaped[2] = { cursor[1], '\0' };
       markdown_draw_piece(&layout, escaped, bold ? bold_font : body_font, false);
       cursor += 2;
@@ -791,8 +794,15 @@ static void settings_layer_update_proc(Layer *layer, GContext *ctx) {
   layout_settings_text(ctx, layer_get_bounds(layer), true);
 }
 
+// Tools and Sessions can open on top of each other; BACK returns to where the first one started.
+static void remember_settings_return(void) {
+  if (!s_show_settings && !s_show_sessions) {
+    s_settings_return_home = s_show_home;
+  }
+}
+
 static void open_settings_screen(void) {
-  s_settings_return_home = s_show_home;
+  remember_settings_return();
   s_show_settings = true;
   s_show_sessions = false;
   s_show_home = false;
@@ -800,7 +810,7 @@ static void open_settings_screen(void) {
 }
 
 static void open_sessions_screen(void) {
-  s_settings_return_home = s_show_home;
+  remember_settings_return();
   s_show_sessions = true;
   s_show_settings = false;
   s_show_home = false;
@@ -810,7 +820,22 @@ static void open_sessions_screen(void) {
 
 static void close_choice_screen(void) {
   s_show_choice = false;
-  s_choice_waiting_dictation = false;
+  // Keep the callback associated with this choice until the dictation modal returns.
+  if (s_choice_waiting_dictation) {
+    s_choice_dictation_cancelled = true;
+  }
+#ifdef HAS_MIC_STREAM
+  if (s_voice_waiting_for_phone && s_voice_waiting_for_choice) {
+    s_voice_waiting_for_phone = false;
+    if (s_voice_phone_wait_timer) {
+      app_timer_cancel(s_voice_phone_wait_timer);
+      s_voice_phone_wait_timer = NULL;
+    }
+  }
+  if (s_voice_for_choice && s_voice_ui != VoiceUiHidden) {
+    cancel_voice_recording();
+  }
+#endif
   s_choice_question[0] = '\0';
   s_choice_option_count = 0;
   s_choice_selection = 0;
@@ -1116,8 +1141,38 @@ static void confirm_new_session(void) {
   update_display("Starting new...");
 }
 
+// When the transcript is full, drop the oldest turns so the newest text is always shown.
+static void make_chat_history_room(size_t needed) {
+  size_t capacity = sizeof(s_chat_history) - 1;
+  size_t length = strlen(s_chat_history);
+  if (needed > capacity) {
+    needed = capacity;
+  }
+  if (length + needed <= capacity) {
+    return;
+  }
+
+  // Cut at the start of a turn when there is one, otherwise at the start of a line.
+  const char *from = s_chat_history + (length + needed - capacity);
+  const char *cut = strstr(from, "\n\nYou\n");
+  if (cut) {
+    cut += 2;
+  } else {
+    cut = strchr(from, '\n');
+    cut = cut ? cut + 1 : s_chat_history + length;
+  }
+
+  size_t dropped = (size_t)(cut - s_chat_history);
+  memmove(s_chat_history, cut, length - dropped + 1);
+  if (s_current_ai_response_start) {
+    s_current_ai_response_start = s_current_ai_response_start >= cut ?
+      s_current_ai_response_start - dropped : s_chat_history;
+  }
+}
+
 //AI: Append text to the session transcript without overflowing the fixed buffer.
 static void append_chat_history(const char *text) {
+  make_chat_history_room(strlen(text));
   size_t current_len = strlen(s_chat_history);
   size_t remaining = sizeof(s_chat_history) - current_len - 1;
   if (remaining > 0) {
@@ -1135,6 +1190,7 @@ static void append_tool_activity_to_history(const char *tool) {
     const char *line_end = strchr(line, '\n');
     size_t line_length = line_end ? (size_t)(line_end - line) : strlen(line);
     if (line_length > 0) {
+      make_chat_history_room(strlen(TOOL_HISTORY_PREFIX) + line_length + 1);
       append_chat_history(TOOL_HISTORY_PREFIX);
       size_t current_len = strlen(s_chat_history);
       size_t remaining = sizeof(s_chat_history) - current_len - 1;
@@ -1668,6 +1724,8 @@ static bool begin_prompt_turn(const char *prompt, const char *status) {
   s_assistant_response[0] = '\0';
   s_show_home = false;
   s_request_active = true;
+  // An unanswered cancel belongs to the previous turn and must not mute this one.
+  s_cancel_pending = false;
   s_auto_follow_chat = true;
   s_active_request_id++;
   if (s_active_request_id == 0) {
@@ -1909,6 +1967,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   if (status_tuple && strcmp(status, "Cancelled") == 0) {
     s_request_active = false;
   } else if (status_tuple && (strcmp(status, "Location on") == 0 || strcmp(status, "Location off") == 0 ||
+                              strcmp(status, "OpenStreetMap on") == 0 || strcmp(status, "OpenStreetMap off") == 0 ||
                               strcmp(status, "Memory on") == 0 || strcmp(status, "Memory off") == 0 ||
                               strcmp(status, "Calculator on") == 0 || strcmp(status, "Calculator off") == 0 ||
                                strcmp(status, "Search on") == 0 || strcmp(status, "Search off") == 0 ||
@@ -2130,6 +2189,10 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
                                char *transcription, void *context) {
   if (s_choice_waiting_dictation) {
     s_choice_waiting_dictation = false;
+    if (s_choice_dictation_cancelled) {
+      s_choice_dictation_cancelled = false;
+      return;
+    }
     if (status == DictationSessionStatusSuccess) {
       handle_voice_transcript(transcription, true);
     }
@@ -2140,12 +2203,18 @@ static void dictation_callback(DictationSession *session, DictationSessionStatus
   if (status == DictationSessionStatusSuccess) {
     handle_voice_transcript(transcription, false);
   } else {
-    s_show_home = true;
+    // Cancelling a follow-up stays in the conversation.
+    if (s_chat_history[0] == '\0') {
+      s_show_home = true;
+    }
     update_display("Ready");
   }
 }
 
 static void start_pebble_dictation(bool for_choice) {
+  if (s_choice_waiting_dictation) {
+    return;
+  }
   s_choice_waiting_dictation = for_choice;
   dictation_session_start(s_dictation_session);
 }
@@ -2416,6 +2485,15 @@ static void start_voice_input(bool for_choice) {
   start_pebble_dictation(for_choice);
 }
 
+// The recording screen covers everything, so buttons must not act on the screens under it.
+static bool voice_ui_visible(void) {
+#ifdef HAS_MIC_STREAM
+  return s_voice_ui != VoiceUiHidden;
+#else
+  return false;
+#endif
+}
+
 // SELECT is the only app-specific button action; UP/DOWN are kept for scrolling.
 static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 #ifdef HAS_MIC_STREAM
@@ -2461,7 +2539,8 @@ static void select_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice || s_show_new_session || s_voice_listening || s_voice_transcribing) {
+  if (s_show_choice || s_show_new_session || s_voice_listening || s_voice_transcribing ||
+      voice_ui_visible()) {
     return;
   }
   open_new_session_screen();
@@ -2529,20 +2608,23 @@ static void back_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void up_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice || s_show_new_session) {
+  if (s_show_choice || s_show_new_session || voice_ui_visible()) {
     return;
   }
   open_settings_screen();
 }
 
 static void down_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (s_show_choice || s_show_new_session) {
+  if (s_show_choice || s_show_new_session || voice_ui_visible()) {
     return;
   }
   open_sessions_screen();
 }
 
 static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (voice_ui_visible()) {
+    return;
+  }
   if (s_show_new_session) {
     s_new_session_selection = 0;
     layer_mark_dirty(s_new_session_layer);
@@ -2570,6 +2652,9 @@ static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void down_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (voice_ui_visible()) {
+    return;
+  }
   if (s_show_new_session) {
     s_new_session_selection = 1;
     layer_mark_dirty(s_new_session_layer);
