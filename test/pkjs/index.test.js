@@ -2583,3 +2583,77 @@ test('installed watch apps can be read and launched with the discovered UUID aft
   assert.equal(calls.length, 1);
   assert.equal(calls[0].args.uuid, 'app-uuid');
 });
+
+test('late plugin discovery cannot start a cancelled or revoked read or disclose a revoked list', async () => {
+  for (const [tool, change] of [['plugin_read', 'cancel'], ['plugin_read', 'disable'], ['plugins_list', 'disable']]) {
+    let resolvePlugins;
+    let subscribed = false;
+    const runtime = pluginRuntime({}, {
+      enumeratePlugins: () => new Promise(resolve => { resolvePlugins = resolve; }),
+      subscribeToSource() { subscribed = true; }
+    });
+    const results = [];
+    runtime.context.executeNamedTool({ name: tool, arguments: { category: 'home', item: 'room_lights' } },
+      runtime.context.requestGeneration, 3, 'x', (content, error) => results.push({ content, error }));
+    if (change === 'cancel') runtime.context.requestGeneration++;
+    else runtime.storage.set('EnablePlugins', '0');
+    resolvePlugins([HUE_PLUGIN]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(subscribed, false);
+    if (change === 'cancel') assert.deepEqual(results, []);
+    else {
+      assert.equal(results.length, 1);
+      assert.equal(results[0].content, null);
+      assert.match(results[0].error, /turned off/);
+    }
+  }
+});
+
+test('watch confirmation cannot run an action from a plugin disabled while waiting', async () => {
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, {
+    invokeAction() { assert.fail('disabled plugin was invoked'); }
+  });
+  prompt(runtime, 'Turn off the kitchen', 9);
+  streamResponse(modelRequests(runtime)[0], {
+    toolCalls: [{ name: 'plugin_action', arguments: { plugin: 'aaaa-hue', action: 'set_on', args: { on: false } } }],
+    reply: ''
+  });
+  runtime.storage.set('DisabledPlugins', JSON.stringify(['aaaa-hue']));
+  runtime.listeners.appmessage({ payload: { ChoiceAnswer: 'Run it #1', RequestId: 9 } });
+  const followup = JSON.parse(modelRequests(runtime)[1].body);
+  assert.match(followup.messages.at(-1).content, /turned off/);
+});
+
+test('plugin confirmations reject arguments that grow beyond the watch limit after formatting', () => {
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, { invokeAction() { assert.fail('action invoked'); } });
+  runtime.context.Pebble.getActiveWatchInfo = () => ({ firmware: { major: 4, minor: 29 } });
+  const result = runTool(runtime, 'plugin_action', {
+    plugin: 'aaaa-hue', action: 'set_on', args: { note: '±'.repeat(75) }
+  });
+  assert.match(result.error, /too long to show/);
+  assert.equal(runtime.sentMessages.some(message => message.ChoiceQuestion), false);
+});
+
+test('plugin confirmation preserves trailing arguments after watch text shrinks', () => {
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, { invokeAction() { assert.fail('action invoked'); } });
+  runTool(runtime, 'plugin_action', {
+    plugin: 'aaaa-hue', action: 'set_on', args: { note: '\u200b'.repeat(240), on: false }
+  });
+  const question = runtime.sentMessages.find(message => message.ChoiceQuestion);
+  assert.match(question.ChoiceQuestion, /on: false$/);
+});
+
+test('late action discovery does not prompt after plugin actions are disabled', async () => {
+  let resolvePlugins;
+  const runtime = pluginRuntime({ EnablePluginActions: '1' }, {
+    enumeratePlugins: () => new Promise(resolve => { resolvePlugins = resolve; }),
+    invokeAction() { assert.fail('action invoked'); }
+  });
+  const result = new Promise(resolve => runtime.context.executeNamedTool({
+    name: 'plugin_action', arguments: { plugin: 'aaaa-hue', action: 'set_on' }
+  }, runtime.context.requestGeneration, 3, 'x', (content, error) => resolve({ content, error })));
+  runtime.storage.set('EnablePluginActions', '0');
+  resolvePlugins([HUE_PLUGIN]);
+  assert.match((await result).error, /turned off/);
+  assert.equal(runtime.sentMessages.some(message => message.ChoiceQuestion), false);
+});

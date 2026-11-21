@@ -211,7 +211,7 @@ module.exports = [
         "type": "toggle",
         "messageKey": "EnablePlugins",
         "label": "Experimental: Read Pebble Plugins",
-        "description": "Lets the AI list installed Pebble plugins and read their data, like weather, music, phone state, reminders, smart lights, or stocks. Data the AI reads is sent to OpenRouter. Needs Pebble app 1.18.0.1 or newer with Settings → Plugins → Plugins / permissions preview turned on, and a build made with Pebble Tool 5.1 or newer (SDK 4.44).",
+        "description": "Lets the AI list installed Pebble plugins and read their data, like weather, music, phone state, reminders, smart lights, or stocks. Data the AI reads is sent to OpenRouter. Needs Pebble app 1.18.0.1 or newer and a build made with Pebble Tool 5.1 or newer (SDK 4.44). On Pebble 1.18, enable Settings → Plugins → Plugins / permissions preview.",
         "defaultValue": false
       },
       {

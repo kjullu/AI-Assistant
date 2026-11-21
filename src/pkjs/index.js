@@ -1637,7 +1637,7 @@ function runCurrencyConversion(calc, generation, callback) {
   };
   request.onerror = function() {
     untrackRequest(request);
-    if (requestIsCurrent(request)) callback(null, 'Currency network error.');
+    if (requestIsCurrent(request)) callback(null, withPebblePermissionHint('Currency network error.'));
   };
   request.ontimeout = function() {
     untrackRequest(request);
@@ -1889,7 +1889,7 @@ function resolvePlaceCoordinates(place, generation, callback) {
     if (!requestIsCurrent(geoRequest)) {
       return;
     }
-    fail('Geocoding network error.');
+    fail(withPebblePermissionHint('Geocoding network error.'));
   };
 
   geoRequest.ontimeout = function() {
@@ -1957,7 +1957,7 @@ function runWeatherTool(weather, generation, callback) {
       if (!requestIsCurrent(request)) {
         return;
       }
-      callback(null, 'Weather network error.');
+      callback(null, withPebblePermissionHint('Weather network error.'));
     };
 
     request.ontimeout = function() {
@@ -1990,7 +1990,7 @@ function runWeatherTool(weather, generation, callback) {
       doFetch(pos.coords.latitude, pos.coords.longitude, 'Current location');
     }, function(err) {
       if (generation !== requestGeneration) return;
-      callback(null, 'Unable to get current location for weather: ' + (err.message || 'unknown error') + '.');
+      callback(null, 'Unable to get current location for weather: ' + (err.message || 'unknown error') + (err.code === 1 ? '. Check Location permission in the Pebble app.' : '.'));
     }, {
       enableHighAccuracy: true,
       maximumAge: 60 * 1000,
@@ -2127,7 +2127,7 @@ function runLocationTool(generation, callback) {
     if (generation !== requestGeneration) {
       return;
     }
-    callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
+    callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + (err.code === 1 ? '. Check Location permission in the Pebble app.' : '.'));
   }, {
     enableHighAccuracy: true,
     maximumAge: 60 * 1000,
@@ -2230,7 +2230,7 @@ function runNearbyPlacesTool(args, generation, callback) {
     };
     request.onerror = function() {
       untrackRequest(request);
-      if (requestIsCurrent(request)) callback(null, 'Unable to reach OpenStreetMap for nearby search.');
+      if (requestIsCurrent(request)) callback(null, withPebblePermissionHint('Unable to reach OpenStreetMap for nearby search.'));
     };
     request.ontimeout = function() {
       untrackRequest(request);
@@ -2238,7 +2238,7 @@ function runNearbyPlacesTool(args, generation, callback) {
     };
     sendRateLimited(request, 'nominatim', 'EnableOpenStreetMap', callback);
   }, function(err) {
-    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
+    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + (err.code === 1 ? '. Check Location permission in the Pebble app.' : '.'));
   }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
 }
 
@@ -2324,7 +2324,7 @@ function requestRoute(mode, startLat, startLon, originLabel, destination, destin
   };
   request.onerror = function() {
     untrackRequest(request);
-    if (requestIsCurrent(request)) callback(null, 'Unable to reach the directions service.');
+    if (requestIsCurrent(request)) callback(null, withPebblePermissionHint('Unable to reach the directions service.'));
   };
   request.ontimeout = function() {
     untrackRequest(request);
@@ -2464,7 +2464,7 @@ function runDirectionsTool(args, generation, callback) {
     };
     search.onerror = function() {
       untrackRequest(search);
-      if (requestIsCurrent(search)) callback(null, 'Unable to reach OpenStreetMap for the destination search.');
+      if (requestIsCurrent(search)) callback(null, withPebblePermissionHint('Unable to reach OpenStreetMap for the destination search.'));
     };
     search.ontimeout = function() {
       untrackRequest(search);
@@ -2518,7 +2518,7 @@ function runDirectionsTool(args, generation, callback) {
     };
     originSearch.onerror = function() {
       untrackRequest(originSearch);
-      if (requestIsCurrent(originSearch)) callback(null, 'Unable to reach OpenStreetMap for the origin search.');
+      if (requestIsCurrent(originSearch)) callback(null, withPebblePermissionHint('Unable to reach OpenStreetMap for the origin search.'));
     };
     originSearch.ontimeout = function() {
       untrackRequest(originSearch);
@@ -2541,7 +2541,7 @@ function runDirectionsTool(args, generation, callback) {
     }
     continueFromOrigin(gpsLat, gpsLon, 'phone GPS');
   }, function(err) {
-    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + '.');
+    if (generation === requestGeneration) callback(null, 'Unable to get location: ' + (err.message || 'unknown error') + (err.code === 1 ? '. Check Location permission in the Pebble app.' : '.'));
   }, { enableHighAccuracy: true, maximumAge: 60 * 1000, timeout: 15000 });
 }
 
@@ -2961,7 +2961,7 @@ function braveSearch(query, generation, callback) {
     if (!requestIsCurrent(request)) {
       return;
     }
-    callback(null, 'Search network error.');
+    callback(null, withPebblePermissionHint('Search network error.'));
   };
 
   request.ontimeout = function() {
@@ -3034,7 +3034,7 @@ function firecrawlScrape(url, generation, callback) {
     if (!requestIsCurrent(request)) {
       return;
     }
-    callback(null, 'Scrape network error.');
+    callback(null, withPebblePermissionHint('Scrape network error.'));
   };
 
   request.ontimeout = function() {
@@ -3163,7 +3163,7 @@ var MAX_PLUGIN_SERIES_VALUES = 24;
 var MAX_PLUGIN_RESULT_CHARS = 3500;
 var MAX_CONFIRM_BYTES = 230; // The watch question buffer is 256 bytes.
 var pluginConfirmCounter = 0;
-var PLUGIN_UNAVAILABLE_TEXT = 'Pebble plugins are unavailable. They need Pebble app 1.18.0.1 or newer with Settings → Plugins → Plugins / permissions preview turned on, and a build made with Pebble Tool 5.1 or newer (SDK 4.44).';
+var PLUGIN_UNAVAILABLE_TEXT = 'Pebble plugins are unavailable. They need Pebble app 1.18.0.1 or newer and a build made with Pebble Tool 5.1 or newer (SDK 4.44). On Pebble 1.18, enable Settings → Plugins → Plugins / permissions preview.';
 
 var PLUGIN_TOGGLE_PREFIX = 'PluginOn_';
 
@@ -3226,9 +3226,9 @@ function configurePluginList(callback) {
     callback();
     return;
   }
-  section.items = section.items.filter(function(item) { return item.messageKey === undefined || item.messageKey.indexOf(PLUGIN_TOGGLE_PREFIX) !== 0; });
   var text = findClayItem(section.items, 'plugin-list-text');
   loadPlugins(function(plugins, error) {
+    section.items = section.items.filter(function(item) { return item.messageKey === undefined || item.messageKey.indexOf(PLUGIN_TOGGLE_PREFIX) !== 0; });
     if (error || !plugins.length) {
       if (text) text.defaultValue = error || 'No Pebble plugins are installed.';
       callback();
@@ -3341,12 +3341,17 @@ function formatPluginList(plugins) {
   return clip(lines.join('\n'), MAX_PLUGIN_RESULT_CHARS * 2);
 }
 
-function runPluginsListTool(callback) {
+function runPluginsListTool(generation, callback) {
   if (!pluginsAvailable()) {
     callback(null, 'Pebble plugins disabled.');
     return;
   }
   loadPlugins(function(plugins, error) {
+    if (generation !== requestGeneration) return;
+    if (!pluginsAvailable()) {
+      callback(null, 'Pebble plugin access was turned off.');
+      return;
+    }
     if (error) {
       callback(null, error);
     } else {
@@ -3419,7 +3424,8 @@ function formatPluginEnvelope(category, item, envelope, limit) {
     lines.push('No entries.');
   }
   for (var i = 0; i < instances.length && i < limit; i++) {
-    var properties = instances[i] && instances[i].properties || {};
+    if (!instances[i]) continue;
+    var properties = instances[i].properties || {};
     var parts = [];
     var names = Object.keys(properties);
     for (var j = 0; j < names.length; j++) {
@@ -3437,6 +3443,10 @@ function formatPluginEnvelope(category, item, envelope, limit) {
   if (result.length <= MAX_PLUGIN_RESULT_CHARS) return result;
   var notice = '\n(Result truncated. Request fewer properties or entries.)';
   return clip(result, MAX_PLUGIN_RESULT_CHARS - notice.length) + notice;
+}
+
+function withPebblePermissionHint(message) {
+  return message + ' Check that AI Assistant has permission in the Pebble app.';
 }
 
 function pluginErrorText(prefix, err) {
@@ -3583,7 +3593,14 @@ function runPluginReadTool(args, generation, callback) {
     config.properties = args.properties.slice(0, 20).map(String);
   }
 
+  timer = setTimeout(function() {
+    finish(null, 'Plugin read timed out.');
+  }, PLUGIN_TIMEOUT_MS);
   loadPlugins(function(plugins) {
+    if (finished || generation !== requestGeneration || !pluginsAvailable() || !pluginCategoryAllowed(category)) {
+      finish(null, 'Pebble plugin access was turned off.');
+      return;
+    }
     // Without the list, the onData check above still blocks turned-off plugins.
     var servers = (plugins || []).filter(function(plugin) { return plugin && servesItem(plugin); });
     var allowed = enabledPlugins(servers);
@@ -3594,16 +3611,6 @@ function runPluginReadTool(args, generation, callback) {
     if (allowed.length < servers.length) {
       config.plugin = allowed[0].uuid;
     }
-    startSubscription();
-  });
-
-  function startSubscription() {
-    if (finished) {
-      return;
-    }
-    timer = setTimeout(function() {
-      finish(null, 'Plugin read timed out.');
-    }, PLUGIN_TIMEOUT_MS);
     try {
       subscription = Pebble.subscribeToSource(config);
     } catch (err) {
@@ -3616,7 +3623,7 @@ function runPluginReadTool(args, generation, callback) {
     } else if (subscription) {
       activePluginSubscriptions.push(subscription);
     }
-  }
+  });
 }
 
 function findPluginAction(plugins, pluginId, actionName) {
@@ -3696,6 +3703,10 @@ function runPluginActionTool(args, generation, requestId, callback) {
     if (generation !== requestGeneration) {
       return;
     }
+    if (!pluginActionsAvailable()) {
+      callback(null, 'Plugin actions were turned off.');
+      return;
+    }
     if (error) {
       callback(null, error);
       return;
@@ -3711,7 +3722,7 @@ function runPluginActionTool(args, generation, requestId, callback) {
     }
     var pluginName = clip(String(match.plugin.name || 'a plugin'), 40);
     var summary = pluginActionSummary(actionArgs);
-    var question = 'Let ' + pluginName + ' run ' + actionName + (summary ? '? ' + summary : '?');
+    var question = watchSafeText('Let ' + pluginName + ' run ' + actionName + (summary ? '? ' + summary : '?'));
     // The user must see every argument, so refuse rather than clip the confirmation.
     if (unescape(encodeURIComponent(question)).length > MAX_CONFIRM_BYTES) {
       callback(null, 'Action arguments are too long to show on the watch for confirmation. Use shorter arguments.');
@@ -3730,6 +3741,10 @@ function runPluginActionTool(args, generation, requestId, callback) {
         }
         if (!pluginActionsAvailable()) {
           callback(null, 'Plugin actions were turned off.');
+          return;
+        }
+        if (!pluginEnabled(match.plugin.uuid)) {
+          callback(null, 'This plugin was turned off in phone settings.');
           return;
         }
         sendToWatch({ Status: 'Running action...' }, requestId);
@@ -3780,7 +3795,7 @@ function executeNamedTool(call, generation, requestId, executionId, callback) {
       callback('Memory updated.', null);
     }
   } else if (name === 'plugins_list') {
-    runPluginsListTool(callback);
+    runPluginsListTool(generation, callback);
   } else if (name === 'plugin_permission') {
     runPluginPermissionTool(args, generation, callback);
   } else if (name === 'plugin_read') {
@@ -4141,7 +4156,7 @@ function addTimelinePin(timeline, generation, executionId, callback) {
 
     request.onerror = function() {
       untrackRequest(request);
-      if (requestIsCurrent(request)) callback(null, 'Timeline network error.');
+      if (requestIsCurrent(request)) callback(null, withPebblePermissionHint('Timeline network error.'));
     };
 
     request.ontimeout = function() {
@@ -4151,7 +4166,7 @@ function addTimelinePin(timeline, generation, executionId, callback) {
 
     request.send(JSON.stringify(pin));
   }, function(error) {
-    if (generation === requestGeneration) callback(null, 'Timeline token unavailable.');
+    if (generation === requestGeneration) callback(null, withPebblePermissionHint('Timeline token unavailable.'));
   });
 }
 
